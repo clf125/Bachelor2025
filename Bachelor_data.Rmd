@@ -1,0 +1,3145 @@
+---
+title: "Bachelor Data"
+author: "Valdemar Cronfeld Schaaf"
+date: "2025-01-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(lme4)
+library(splines)
+library(ggplot2)
+library(tidyverse)
+library(lmerTest)
+library(changepoint)
+library(MuMIn)
+library(readxl)
+library(dplyr)
+library(MASS)
+library(xtable)
+library(patchwork)
+library(DHARMa)
+library(fitdistrplus)
+
+
+
+cortisol    = read.csv2("https://web.math.ku.dk/~susanne/BSc/CortisolIsotopesEastGreenlandNarwhalTusks.csv", header = TRUE)
+cortisol$id = as.factor(cortisol$id)
+carbon      = read.csv2("https://web.math.ku.dk/~susanne/BSc/CarbonIsotopesEastGreenlandNarwhalTusks.csv", header = TRUE)
+carbon$id   = as.factor(carbon$id)
+
+nitrogen_data <- read_excel("nitrogen.xlsx")
+progesteron_data <- read_excel("progesteron.xlsx")
+ 
+data.wide = merge(cortisol, carbon, by = c("id", "year"))
+data.long = gather(data.wide, key = "isotope", value = "measurement", c("ng_g","d13c.cor"))
+head(data.long)
+env_data <- read_excel("Envdata_SD.xlsx")
+env_data <- env_data %>%
+  rename(year = Year)
+merged_data <- left_join(data.wide, env_data, by = "year")
+
+catch_data <- read_excel("Biodata_dryad.xls")
+catch_data <- catch_data %>% rename(year = YEAR)
+data.gamma <- subset(data.wide, ng_g > 0)
+merged_data2 <- left_join(data.gamma, catch_data, by = "year")
+```
+```{r}
+ggplot(data = data.long, aes(x = year, y = measurement, color = id)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~ isotope, scales = "free_y", ncol = 1)
+```
+
+```{r}
+model1 <- lm(ng_g ~ year, data = data.wide)
+summary(model1)
+```
+
+```{r}
+lme1 <- lmer(ng_g ~ year + (year | id), data = data.wide)
+summary(lme1)
+```
+
+```{r}
+lme2 <- lmer(ng_g ~ year + (1 + year | id), data = data.wide)
+summary(lme2)
+```
+
+```{r}
+fct1 <- function(x) {return(ifelse(data.wide$year >= x, 1, 0))}
+fct2 <- function(x) {return((-logLik(lmer(ng_g ~ fct1(x) + (1 | id), data.wide))[1]))}
+optimize(fct2, c(1978,2018), maximum = FALSE)
+
+```
+
+```{r}
+df_before_2001 <- subset(data.wide, year < 2001)
+df_2001_and_after <- subset(data.wide, year >= 2001)  
+```
+
+```{r}
+model_before <- lmer(ng_g ~ year + (year | id), data = df_before_2001)
+model_after <- lmer(ng_g ~ year + (year | id), data = df_2001_and_after)
+summary(model_after)
+summary(model_before)
+
+
+```
+
+```{r}
+summary(model_after)
+```
+
+```{r}
+summary(model_before)
+```
+
+```{r}
+r.squaredGLMM(model_before) 
+plot(model_before)
+```
+
+```{r}
+r.squaredGLMM(model_after) 
+plot(model_after) 
+```
+
+```{r}
+r.squaredGLMM(lme1) 
+plot(lme1)  
+#R2m er den marginale R2 værdi, og beskriver hvor meget af variansen der er forklaret er de fixed effects
+#R2m er den conditional R2 værdi, og beskriver hvor meget af variansen der er forklaret er de fixed effects + random effects.
+```
+
+
+
+
+```{r}
+df_before_2002 <- data.wide %>% filter(year <= 2002)
+df_after_2002 <- data.wide %>% filter(year > 2002)
+
+mean_before_2002 <- mean(df_before_2002$ng_g, na.rm = TRUE)
+mean_after_2002 <- mean(df_after_2002$ng_g, na.rm = TRUE)
+
+segment_means <- data.frame(
+  start_year = c(min(data.wide$year), 2002),
+  end_year = c(2002, max(data.wide$year)),
+  mean_ng_g = c(mean_before_2002, mean_after_2002)
+)
+
+print(segment_means)
+
+```
+
+```{r}
+ggplot(data.wide, aes(x = year, y = ng_g)) +
+  geom_vline(xintercept = 2002, linetype = "dashed", color = "red", size = 1) +  
+  geom_segment(data = segment_means, 
+               aes(x = start_year, xend = end_year, 
+                   y = mean_ng_g, yend = mean_ng_g), 
+               color = "black", size = 1.2) +  
+
+  ylim(0, 1.5) +
+  
+  labs(title = "Mean ng_g Before and After 2002",
+       subtitle = "Red dashed line = changepoint at 2002, Black lines = mean for each period",
+       x = "Year", y = "ng_g") +
+  theme_minimal()
+
+```
+
+
+```{r}
+lme_log <- logLik(lmer(ng_g ~ year + (1 | id), data = data.wide))
+lme_log
+```
+
+
+
+```{r}
+#glm(Y ~ X, family = Gamma(log()), data = )
+```
+
+```{r}
+get_logLik <- function(year_vector, response = "ng_g", random_effect = "id", data) {
+  temp_data <- data
+  temp_data$year_temp <- year_vector
+  
+  model <- lmer(as.formula(paste(response, "~ year_temp + (1 |", random_effect, ")")),
+                data = temp_data, REML = FALSE)
+  
+  logLik(model)
+}
+
+```
+
+```{r}
+years_to_try <- seq(1990, 2020, by = 1)
+
+log_liks <- sapply(years_to_try, function(y) {
+  year_shifted <- data.wide$year - y 
+  get_logLik(year_shifted, data = data.wide)
+})
+
+plot(years_to_try, log_liks, type = "b", xlab = "Year Shift", ylab = "Log-Likelihood")
+
+```
+
+```{r}
+sum(data.wide$ng_g <= 0, na.rm = TRUE)
+```
+
+
+```{r}
+data.wide$after2002 <- ifelse(data.wide$year > 2002, 1, 0)
+
+data.gamma <- subset(data.wide, ng_g > 0)
+
+glm_model <- glm(ng_g ~ after2002, family = Gamma(link = "log"), data = data.gamma)
+
+summary(glm_model)
+
+
+```
+
+```{r}
+exp(coef(glm_model))
+```
+
+```{r}
+data.gamma <- subset(data.wide, ng_g > 0)
+
+glmm_model_kortisol <- glmer(ng_g ~ after2002 + (1 | id),
+                    data = data.gamma,
+                    family = Gamma(link = "log"))
+
+
+sink("kortisol_change_model_summary.txt")
+summary(glmm_model_kortisol)
+sink()
+summary(glmm_model_kortisol)
+
+```
+
+```{r}
+plot(fitted(glmm_model_kortisol), resid(glmm_model_kortisol), main = "Observed Residuals vs Fitted")
+abline(h = 0, col = "red")
+
+
+```
+```{r}
+sim_data <- simulate(glmm_model_kortisol, nsim = 1)[[1]]
+resid_sim <- sim_data - fitted(glmm_model_kortisol)
+
+plot(fitted(glmm_model_kortisol), resid_sim, main = "Simulated Residuals vs Fitted")
+abline(h = 0, col = "red")
+```
+```{r}
+plot(density(resid(glmm_model_kortisol)), col = "blue", lwd = 2, main = "Residual Densities")
+lines(density(resid_sim), col = "gray", lwd = 2, lty = 2)
+legend("topright", legend = c("Observed", "Simulated"), col = c("blue", "gray"), lty = c(1, 2))
+
+```
+
+
+```{r}
+exp(coef(glmm_model_kortisol)$id)
+```
+
+
+
+
+```{r}
+predict_data <- data.frame(after2002 = c(0, 1))  
+
+link_preds <- predict(glm_model, newdata = predict_data, type = "link", se.fit = TRUE)
+
+predicted_means <- exp(link_preds$fit)
+lower_ci <- exp(link_preds$fit - 1.96 * link_preds$se.fit)
+upper_ci <- exp(link_preds$fit + 1.96 * link_preds$se.fit)
+
+predict_data$mean_ng_g <- predicted_means
+predict_data$lower_ci <- lower_ci
+predict_data$upper_ci <- upper_ci
+predict_data$label <- c("Before or in 2002", "After 2002")
+
+barplot(height = predict_data$mean_ng_g,
+        names.arg = predict_data$label,
+        ylim = c(0, max(predict_data$upper_ci) * 1.1),
+        col = "skyblue", ylab = "Predicted mean ng_g",
+        main = "Effect of Year > 2002 on ng_g")
+
+arrows(x0 = 1:2, y0 = predict_data$lower_ci, y1 = predict_data$upper_ci,
+       angle = 90, code = 3, length = 0.1)
+
+```
+
+```{r}
+predict_data$label <- factor(predict_data$label, levels = c("Before or in 2002", "After 2002"))
+
+ggplot(predict_data, aes(x = label, y = mean_ng_g)) +
+  geom_col(fill = "steelblue") +
+  geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), width = 0.2) +
+  labs(title = "Predicted ng_g Before vs After 2002",
+       x = "Time", y = "Predicted mean ng_g") +
+  theme_minimal()
+
+```
+
+```{r}
+ng_g_clean <- data.wide$ng_g
+ng_g_clean <- ng_g_clean[is.finite(ng_g_clean) & ng_g_clean > 0]
+ng_g_clean <- ng_g_clean
+
+fit <- fitdistr(ng_g_clean, "gamma")
+print(fit)
+```
+
+
+```{r}
+hist(ng_g_clean, breaks = 30, probability = TRUE, main = "Gamma Fit to ng_g")
+curve(dgamma(x, shape = fit$estimate["shape"], rate = fit$estimate["rate"]),
+      col = "red", lwd = 2, add = TRUE)
+
+qqplot(qgamma(ppoints(length(ng_g_clean)), 
+              shape = fit$estimate["shape"], 
+              rate = fit$estimate["rate"]),
+       ng_g_clean,
+       main = "Q-Q Plot for Gamma Distribution")
+abline(0, 1, col = "blue", lwd = 2)
+
+ks.test(ng_g_clean, "pgamma",
+        shape = fit$estimate["shape"],
+        rate = fit$estimate["rate"])
+
+```
+
+```{r}
+fkt <- function(x) {return(ifelse(data.wide$year >= x, 1, 0))}
+fkt(2001)
+ 
+fkt_2 <- function(x) {return(-logLik(lmer(ng_g ~ fkt(x) + (1 | id), data = data.wide))[1])}
+fkt_2(2002)
+
+```
+```{r}
+cutoff_years <- sort(unique(data.wide$year))
+
+neg_logliks <- sapply(cutoff_years, fkt_2)
+
+best_year <- cutoff_years[which.min(neg_logliks)]
+
+plot(cutoff_years, neg_logliks, type = "l", lwd = 2,
+     xlab = "Cutoff Year", ylab = "Negative Log-Likelihood",
+     main = "Model Fit vs. Year Cutoff")
+
+abline(v = best_year, col = "red", lty = 2)
+text(best_year, min(neg_logliks), labels = paste("Best:", best_year), pos = 4, col = "red")
+```
+
+```{r}
+data.gamma$change <- ifelse(data.gamma$year < 2002, 0, 1)
+
+data_929 <- subset(data.wide, id == 929)
+data_rest <- subset(data.wide, id != 929)
+
+ng_929 <- data_929$ng_g
+ng_rest <- data_rest$ng_g
+
+ng_929 <- ng_929[is.finite(ng_929) & ng_929 > 0]
+ng_rest <- ng_rest[is.finite(ng_rest) & ng_rest > 0]
+
+fit_929 <- fitdistr(ng_929, "gamma")
+fit_rest <- fitdistr(ng_rest, "gamma")
+
+shape_929 <- fit_929$estimate["shape"]
+rate_929 <- fit_929$estimate["rate"]
+
+shape_rest <- fit_rest$estimate["shape"]
+rate_rest <- fit_rest$estimate["rate"]
+
+n_929 <- length(ng_929)
+n_rest <- length(ng_rest)
+w_929 <- n_929 / (n_929 + n_rest)
+w_rest <- n_rest / (n_929 + n_rest)
+
+ng_all <- data.wide$ng_g
+ng_all <- ng_all[is.finite(ng_all) & ng_all > 0]
+hist(ng_all, breaks = 40, probability = TRUE, col = "lightgray",
+     main = "Gamma Mixture Model: ID 929 vs Others", xlab = "ng_g")
+
+curve(w_929 * dgamma(x, shape = shape_929, rate = rate_929), 
+      add = TRUE, col = "blue", lwd = 2)
+curve(w_rest * dgamma(x, shape = shape_rest, rate = rate_rest), 
+      add = TRUE, col = "darkgreen", lwd = 2)
+
+curve(w_929 * dgamma(x, shape = shape_929, rate = rate_929) +
+      w_rest * dgamma(x, shape = shape_rest, rate = rate_rest),
+      add = TRUE, col = "red", lwd = 3, lty = 2)
+
+legend("topright", legend = c("ID 929", "Other IDs", "Mixture"),
+       col = c("blue", "darkgreen", "red"), lty = c(1, 1, 2), lwd = c(2, 2, 3))
+
+```
+
+```{r}
+set.seed(123) 
+n_sim <- length(ng_all)
+
+sim_group <- rbinom(n_sim, size = 1, prob = w_929)
+sim_data <- ifelse(sim_group == 1,
+                   rgamma(n_sim, shape = shape_929, rate = rate_929),
+                   rgamma(n_sim, shape = shape_rest, rate = rate_rest))
+
+qqplot(sim_data, ng_all, main = "Q-Q Plot: Observed vs Gamma Mixture",
+       xlab = "Simulated Quantiles (Mixture Gamma)",
+       ylab = "Empirical Quantiles (ng_g)", pch = 20, col = "darkblue")
+abline(0, 1, col = "red", lwd = 2, lty = 2)
+
+```
+
+```{r}
+for (var in setdiff(names(env_data), "Year")) {
+  plot(env_data$year, env_data[[var]], type = "l",
+       main = var, xlab = "Year", ylab = var)
+}
+
+```
+
+```{r}
+merged_data$after2002 <- ifelse(merged_data$year > 2002, 1, 0)
+
+merged_data <- subset(merged_data, ng_g > 0)
+
+```
+
+```{r}
+data.gamma <- subset(merged_data, ng_g > 0)
+
+glmm_model2 <- glmer(
+  ng_g ~ after2002 + SST + FS_Zha_volnorm + FS_Zha_areanorm + Storaug +
+    MeanSI1900 + MeanSI1820 + Icetempall + IcetempJFM + SEG_sst_strata1_aug +
+    (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model2)
+
+```
+
+```{r}
+vars_to_numeric <- c("ng_g", "after2002", "SST", "FS_Zha_volnorm", "FS_Zha_areanorm",
+                     "Storaug", "MeanSI1900", "MeanSI1820", "Icetempall", "IcetempJFM",
+                     "SEG_sst_strata1_aug","SEG_sst_strata2_aug","SEG_sst_strata3_aug","SEG_sst_strata4_aug","SEG_sst_strata5_aug","SEG_sst_strata6_aug","SEG_sst_strata7_aug","SEG_sst_strata8_aug","SEG_sst_strata9_aug", "IcesalJFM", "Icesalall", "IcetempJAS", "IcesalJAS","Shelf","AMO","NAO","FYLT","MLD","SIC","Fx9_0to200_jas","NEG_0to20m_81to73p5_aug","NEG_0to20m_73p5to69_aug")
+
+data.gamma[vars_to_numeric] <- lapply(data.gamma[vars_to_numeric], as.numeric)
+
+
+```
+
+```{r}
+glmm_model3 <- glmer(
+  ng_g ~ after2002 + SST + FS_Zha_volnorm + FS_Zha_areanorm + Storaug +
+    MeanSI1900 + MeanSI1820 + Icetempall + Icesalall + IcetempJFM + IcesalJFM + SEG_sst_strata1_aug + SEG_sst_strata2_aug + SEG_sst_strata3_aug + SEG_sst_strata4_aug + SEG_sst_strata5_aug + SEG_sst_strata6_aug + SEG_sst_strata7_aug + SEG_sst_strata8_aug + SEG_sst_strata9_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3)
+
+```
+
+```{r}
+#Fjerner variablen Icetempall fra modellen ovenfor
+glmm_model3.1 <- glmer(
+  ng_g ~ after2002 + SST + FS_Zha_volnorm + FS_Zha_areanorm + Storaug +
+    MeanSI1900 + MeanSI1820 + Icesalall + IcetempJFM + IcesalJFM + SEG_sst_strata1_aug + SEG_sst_strata2_aug + SEG_sst_strata3_aug + SEG_sst_strata4_aug + SEG_sst_strata5_aug + SEG_sst_strata6_aug + SEG_sst_strata7_aug + SEG_sst_strata8_aug + SEG_sst_strata9_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3.1)
+
+```
+
+```{r}
+#Fjerner variablen SEG_sst_strata2_aug fra modellen ovenfor
+glmm_model3.2 <- glmer(
+  ng_g ~ after2002 + SST + FS_Zha_volnorm + FS_Zha_areanorm + Storaug +
+    MeanSI1900 + MeanSI1820 + Icesalall + IcetempJFM + IcesalJFM + SEG_sst_strata1_aug + SEG_sst_strata3_aug + SEG_sst_strata4_aug + SEG_sst_strata5_aug + SEG_sst_strata6_aug + SEG_sst_strata7_aug + SEG_sst_strata8_aug + SEG_sst_strata9_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3.2)
+
+```
+
+```{r}
+#Fjerner variablen SEG_sst_strata3_aug fra modellen ovenfor
+glmm_model3.3 <- glmer(
+  ng_g ~ after2002 + SST + FS_Zha_volnorm + FS_Zha_areanorm + Storaug +
+    MeanSI1900 + MeanSI1820 + Icesalall + IcetempJFM + IcesalJFM + SEG_sst_strata1_aug + SEG_sst_strata4_aug + SEG_sst_strata5_aug + SEG_sst_strata6_aug + SEG_sst_strata7_aug + SEG_sst_strata8_aug + SEG_sst_strata9_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3.3)
+
+```
+
+```{r}
+#Fjerner variablen MeanSI1820 fra modellen ovenfor
+glmm_model3.4 <- glmer(
+  ng_g ~ after2002 + SST + FS_Zha_volnorm + FS_Zha_areanorm + Storaug +
+    MeanSI1900 + Icesalall + IcetempJFM + IcesalJFM + SEG_sst_strata1_aug + SEG_sst_strata4_aug + SEG_sst_strata5_aug + SEG_sst_strata6_aug + SEG_sst_strata7_aug + SEG_sst_strata8_aug + SEG_sst_strata9_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3.4)
+
+```
+```{r}
+#Fjerner variablen IcesalJFM fra modellen ovenfor
+glmm_model3.4 <- glmer(
+  ng_g ~ after2002 + SST + FS_Zha_volnorm + FS_Zha_areanorm + Storaug +
+    MeanSI1900 + Icesalall + IcetempJFM + SEG_sst_strata1_aug + SEG_sst_strata4_aug + SEG_sst_strata5_aug + SEG_sst_strata6_aug + SEG_sst_strata7_aug + SEG_sst_strata8_aug + SEG_sst_strata9_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3.4)
+
+```
+```{r}
+#Fjerner variablen SST fra modellen ovenfor
+glmm_model3.5 <- glmer(
+  ng_g ~ after2002 + FS_Zha_volnorm + FS_Zha_areanorm + Storaug +
+    MeanSI1900 + Icesalall + IcetempJFM + SEG_sst_strata1_aug + SEG_sst_strata4_aug + SEG_sst_strata5_aug + SEG_sst_strata6_aug + SEG_sst_strata7_aug + SEG_sst_strata8_aug + SEG_sst_strata9_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3.5)
+
+```
+```{r}
+#Fjerner variablen MeanSI1900 fra modellen ovenfor
+glmm_model3.6 <- glmer(
+  ng_g ~ after2002 + FS_Zha_volnorm + FS_Zha_areanorm + Storaug + Icesalall + IcetempJFM + SEG_sst_strata1_aug + SEG_sst_strata4_aug + SEG_sst_strata5_aug + SEG_sst_strata6_aug + SEG_sst_strata7_aug + SEG_sst_strata8_aug + SEG_sst_strata9_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3.6)
+
+```
+```{r}
+#Fjerner variablen SEG_sst_strata5_aug fra modellen ovenfor
+glmm_model3.7 <- glmer(
+  ng_g ~ after2002 + FS_Zha_volnorm + FS_Zha_areanorm + Storaug + Icesalall + IcetempJFM + SEG_sst_strata1_aug + SEG_sst_strata4_aug + SEG_sst_strata6_aug + SEG_sst_strata7_aug + SEG_sst_strata8_aug + SEG_sst_strata9_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3.7)
+
+```
+```{r}
+#Fjerner variablen FS_Zha_areanorm fra modellen ovenfor
+glmm_model3.8 <- glmer(
+  ng_g ~ after2002 + FS_Zha_volnorm + Storaug + Icesalall + IcetempJFM + SEG_sst_strata1_aug + SEG_sst_strata4_aug + SEG_sst_strata6_aug + SEG_sst_strata7_aug + SEG_sst_strata8_aug + SEG_sst_strata9_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3.8)
+
+```
+```{r}
+#Fjerner variablen SEG_sst_strata9_aug fra modellen ovenfor
+glmm_model3.9 <- glmer(
+  ng_g ~ after2002 + FS_Zha_volnorm + Storaug + Icesalall + IcetempJFM + SEG_sst_strata1_aug + SEG_sst_strata4_aug + SEG_sst_strata6_aug + SEG_sst_strata7_aug + SEG_sst_strata8_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3.9)
+
+```
+```{r}
+#Fjerner variablen Icesalall fra modellen ovenfor
+glmm_model3.9.1 <- glmer(
+  ng_g ~ after2002 + FS_Zha_volnorm + Storaug + IcetempJFM + SEG_sst_strata1_aug + SEG_sst_strata4_aug + SEG_sst_strata6_aug + SEG_sst_strata7_aug + SEG_sst_strata8_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3.9.1)
+
+```
+
+```{r}
+#Fjerner variablen SEG_sst_strata6_aug fra modellen ovenfor
+glmm_model3.9.2 <- glmer(
+  ng_g ~ after2002 + FS_Zha_volnorm + Storaug + IcetempJFM + SEG_sst_strata1_aug + SEG_sst_strata4_aug + SEG_sst_strata7_aug + SEG_sst_strata8_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3.9.2)
+
+```
+```{r}
+#Fjerner variablen FS_Zha_volnorm fra modellen ovenfor
+glmm_model3.9.3 <- glmer(
+  ng_g ~ after2002 + Storaug + IcetempJFM + SEG_sst_strata1_aug + SEG_sst_strata4_aug + SEG_sst_strata7_aug + SEG_sst_strata8_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3.9.3)
+
+```
+```{r}
+#Fjerner variablen SEG_sst_strata7_aug fra modellen ovenfor
+glmm_model3.9.4 <- glmer(
+  ng_g ~ after2002 + Storaug + IcetempJFM + SEG_sst_strata1_aug + SEG_sst_strata4_aug + SEG_sst_strata8_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3.9.4)
+
+```
+```{r}
+#Fjerner variablen SEG_sst_strata8_aug fra modellen ovenfor
+glmm_model3.9.5 <- glmer(
+  ng_g ~ after2002 + Storaug + IcetempJFM + SEG_sst_strata1_aug + SEG_sst_strata4_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3.9.5)
+
+```
+
+```{r}
+#Fjerner variablen Storaug fra modellen ovenfor
+glmm_model3.9.6 <- glmer(
+  ng_g ~ after2002 + IcetempJFM + SEG_sst_strata1_aug + SEG_sst_strata4_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3.9.6)
+
+```
+```{r}
+#Fjerner variablen SEG_sst_strata4_aug fra modellen ovenfor
+glmm_model3.9.7 <- glmer(
+  ng_g ~ after2002 + IcetempJFM + SEG_sst_strata1_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3.9.7)
+
+```
+```{r}
+#Fjerner variablen IcetempJFM fra modellen ovenfor
+glmm_model3.9.8 <- glmer(
+  ng_g ~ after2002 + SEG_sst_strata1_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model3.9.8)
+
+```
+```{r}
+summary(data.gamma$SEG_sst_strata1_aug)
+#cor mellem to klima variable, hvis abs over 0.7-0.8 svært at bruge i modellen, hvis over 0.9 vælg kun en.
+#Tjek signifikante klimavariable med changepoint, og se om det bliver mindre signifikant.
+```
+
+
+
+```{r}
+r.squaredGLMM(glmm_model3.9.8)
+
+```
+```{r}
+glmm_model4 <- glmer(
+  ng_g ~ SIC +
+    MeanSI1900 + Icetempall + IcetempJAS + SEG_sst_strata1_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model4)
+```
+
+```{r}
+cor(data.gamma$IcetempJAS,data.gamma$Icetempall, use = "complete.obs")
+```
+```{r}
+glmm_model5 <- glmer(
+  ng_g ~ after2002 + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model5)
+```
+
+```{r}
+glmm_model5.1 <- glmer(
+  ng_g ~ after2002 + IcetempJAS + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model5.1)
+```
+
+```{r}
+glmm_model5.2 <- glmer(
+  ng_g ~ after2002 + IcetempJAS + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model5.2)
+```
+
+```{r}
+ggplot(data.gamma, aes(x = IcetempJAS, y = ng_g)) +
+  geom_point() +
+  labs(
+    x = "Ice Temperature (JAS)",
+    y = "ng/g",
+    title = "Scatterplot of ng/g vs. Ice Temperature (JAS)"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+ggplot(data.gamma, aes(x = IcetempJAS, y = ng_g)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(
+    x = "Iceland Temperature (July August September)",
+    y = "ng/g",
+    title = "Scatterplot of ng/g vs. Iceland Temperature (July August September)"
+  ) +
+  theme_minimal()
+
+```
+```{r}
+ggplot(data.gamma, aes(x = year, y = ng_g)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, color = "red") +
+  labs(
+    x = "Year",
+    y = "ng/g",
+    title = "Scatterplot of ng/g vs. Year with Trend Line"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+ggplot(data.gamma, aes(x = year, y = IcetempJAS)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(
+    x = "Year",
+    y = "Ice Temperature (July August September)",
+    title = "Scatterplot of Ice Temperature (July August September) vs. Year with Trend Line"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+data.gamma$predicted <- predict(glmm_model_kortisol, re.form = NULL, type = "response")
+
+
+ggplot(data.gamma, aes(x = year, y = predicted, color = id, group = id)) +
+  geom_line() +
+  labs(
+    x = "Year",
+    y = "Predicted ng/g",
+    color = "Individual ID",
+    title = "Predicted ng/g Over Time by ID (GLMM)"
+  ) +
+  scale_x_continuous(
+  breaks = seq(1980, max(data.gamma$year, na.rm = TRUE), by = 2)
+) +
+  geom_vline(xintercept = 2002, linetype = "dashed", color = "red") +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+```{r}
+data.gamma$predicted <- predict(glmm_model_kortisol, re.form = NULL, type = "response")
+
+data.gamma$population_pred <- predict(glmm_model_kortisol, re.form = NA, type = "response")
+
+
+ggplot(data.gamma, aes(x = year)) +
+  geom_line(aes(y = predicted, color = id, group = id), alpha = 0.6) +
+  
+  geom_line(aes(y = population_pred), color = "black", linewidth = 1.2) +
+  
+  labs(
+    x = "År",
+    y = "Predicted ng/g",
+    color = "ID",
+    title = "Predicted ng/g Over Time by ID with Population Trend (GLMM)"
+  ) +
+  scale_x_continuous(
+    breaks = seq(1980, max(data.gamma$year, na.rm = TRUE), by = 2)
+  ) +
+  geom_vline(xintercept = 2002, linetype = "dashed", color = "red") +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+ggsave("predicted_ng_g__by_changepoint_with_pop.pdf", width = 7, height = 5)
+```
+```{r}
+ggplot(data.gamma, aes(x = year)) +
+  geom_point(aes(y = ng_g, color = id), alpha = 0.4, size = 1.5) +
+  geom_line(aes(y = predicted, color = id, group = id), alpha = 0.6) +
+  geom_line(aes(y = population_pred), color = "black", linewidth = 1.2) +
+  labs(
+    x = "År",
+    y = "ng/g",
+    color = "ID",
+    title = "Observerede og forudsagte værdier af ng/g over tid på ID"
+  ) +
+  scale_x_continuous(
+    breaks = seq(1980, max(data.gamma$year, na.rm = TRUE), by = 2)
+  ) +
+  geom_vline(xintercept = 2002, linetype = "dashed", color = "red") +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+ggsave("predicted_and_observed_ng_g__by_changepoint_with_pop.pdf", width = 7, height = 5)
+```
+
+```{r}
+data.gamma.filtered <- data.gamma %>% filter(id != 929)
+
+glmm_model_filtered <- glmer(
+  ng_g ~ after2002 + (1 | id),
+  data = data.gamma.filtered,
+  family = gaussian(link = "identity")  
+)
+
+data.gamma.filtered$predicted <- predict(glmm_model_filtered, re.form = NULL)      
+data.gamma.filtered$population_pred <- predict(glmm_model_filtered, re.form = NA)  
+
+ggplot(data.gamma.filtered, aes(x = year)) +
+  geom_line(aes(y = predicted, color = id, group = id), alpha = 0.6) +
+  geom_line(aes(y = population_pred), color = "black", linewidth = 1.2) +
+  geom_vline(xintercept = 2002, linetype = "dashed", color = "red") +
+  scale_x_continuous(
+    breaks = seq(1980, max(data.gamma.filtered$year, na.rm = TRUE), by = 2)
+  ) +
+  labs(
+    x = "Year",
+    y = "Predicted ng/g",
+    color = "Individual ID",
+    title = "Predicted ng/g Over Time by ID (Excluding ID 929)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+
+```{r}
+fct1.1 <- function(x) {return(ifelse(data.wide$year >= x, 1, 0))}
+fct2.1 <- function(x) {return((-logLik(lm(IcetempJAS ~ fct1.1(x), data.gamma))[1]))}
+optimize(fct2, c(1978,2018), maximum = FALSE)
+```
+
+
+
+```{r}
+fct1.1 <- function(x) { return(ifelse(data.gamma$year >= x, 1, 0)) }
+
+fct2.1 <- function(x) {
+  return(-logLik(lm(IcetempJAS ~ fct1.1(x), data = data.gamma))[1])
+}
+
+years <- seq(1978, 2018, by = 1)
+
+loglik_values <- sapply(years, fct2.1)
+
+opt_result <- optimize(fct2.1, c(1978, 2018), maximum = FALSE)
+
+plot(
+  years, loglik_values, type = "l",
+  xlab = "Changepoint Year", ylab = "-Log Likelihood",
+  main = "Log-Likelihood Profile for Changepoint in IcetempJAS"
+)
+abline(v = opt_result$minimum, col = "red", lty = 2)
+text(opt_result$minimum, min(loglik_values),
+     labels = paste0("Optimal: ", round(opt_result$minimum, 1)),
+     pos = 4, col = "red")
+
+```
+```{r}
+change_var <- function(x, data) {
+  return(ifelse(data$year >= x, 1, 0))
+}
+
+change_gamma <- function(x) {
+  data.tmp <- data.gamma  
+  data.tmp$changepoint <- change_var(x, data.tmp)  
+  
+  model <- glmer(ng_g ~ changepoint + (1 | id),
+                 data = data.tmp,
+                 family = Gamma(link = "log"))
+  
+  return(-logLik(model)[1])  
+}
+
+
+years <- seq(1978, 2018, by = 1)
+neg_loglik_values <- sapply(years, change_gamma)
+
+min_index <- which.min(neg_loglik_values)
+best_year <- years[min_index]
+
+pdf("changepoint_ng_g_optimal.pdf", width = 7, height = 5)
+
+plot(years, neg_loglik_values, type = "l", lwd = 2,
+     xlab = "År",
+     ylab = "Log Likelihood",
+     main = "Changepoint analyse af kortisol")
+abline(v = best_year, col = "red", lty = 2)
+text(best_year, neg_loglik_values[min_index],
+     labels = paste(best_year),
+     pos = 4, col = "red")
+
+dev.off()
+
+```
+```{r}
+mean_before <- data.gamma %>%
+  filter(year < 2002) %>%
+  summarise(mean_ng = mean(ng_g, na.rm = TRUE)) %>%
+  pull(mean_ng)
+
+mean_after <- data.gamma %>%
+  filter(year >= 2002) %>%
+  summarise(mean_ng = mean(ng_g, na.rm = TRUE)) %>%
+  pull(mean_ng)
+
+year_min <- min(data.gamma$year, na.rm = TRUE)
+year_max <- max(data.gamma$year, na.rm = TRUE)
+
+ggplot(data.gamma, aes(x = year, y = ng_g)) +
+  geom_point(alpha = 0.6) +
+  geom_vline(xintercept = 2002, linetype = "dashed", color = "red") +
+ 
+  geom_segment(aes(x = year_min, xend = 2002, y = mean_before, yend = mean_before),
+               color = "blue", size = 1) +
+  geom_segment(aes(x = 2002, xend = year_max, y = mean_after, yend = mean_after),
+               color = "red", size = 1) +
+  
+  labs(
+    x = "År",
+    y = "ng/g",
+    title = "Gennemsnit af kortisol før og efter år 2002",
+  ) +
+  theme_minimal()
+
+ggsave("changepoint_ng_g_means.pdf", width = 7, height = 5)
+
+mean_after/mean_before
+
+```
+```{r}
+# Plot 1: ng_g vs SIC
+p1.SIC <- ggplot(data.gamma, aes(x = IcetempJAS, y = ng_g)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(x = "IcetempJAS", y = "ng_g", title = "Kortisol mod IcetempJAS") +
+  theme_minimal()
+
+# Plot 2: ng_g vs Year
+p2.SIC <- ggplot(data.gamma, aes(x = year, y = ng_g)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(x = "År", y = "ng_g", title = "Kortisol mod år") +
+  theme_minimal()
+
+# Plot 3: IcetempJAS vs Year
+p3.SIC <- ggplot(data.gamma, aes(x = year, y = IcetempJAS)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(x = "År", y = "IcetempJAS", title = "IcetempJAS mod år") +
+  theme_minimal()
+
+p1.SIC
+ggsave("kortisol_mod_IcetempJAS.pdf", width = 7, height = 5)
+p2.SIC
+ggsave("kortisol_mod_år.pdf", width = 7, height = 5)
+p3.SIC
+ggsave("IcetempJAS_mod_år.pdf", width = 7, height = 5)
+```
+
+```{r}
+glmm_model_find_var <- glmer(ng_g ~ IcesalJFM + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model_find_var)
+
+#Følgende variable er signifikante:
+# FYLT - p-val = 0.0816 . - model failed to converge
+# Shelf - p-val = 0.06394 . - Ingen fejl
+# IcetempJAS p-val = 0.02421 * - Ingen fejl
+# FS_Zha_areanorm p-val = <2e-16 *** - Model failed to converge
+# IcesalJFM p-val = <2e-16 *** - Model failed to converge
+#
+
+```
+
+
+
+
+```{r}
+glmm_model7.test <- glmer(ng_g ~ after2002 + IcesalJFM + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model7.test)
+
+
+#Model med kun changepoint - changepoint p-val = 0.007683 **
+
+
+#Følgende variable er signifikante:
+# FYLT - p-val = 0.0816 . - model failed to converge - med CP p-val = 0.38733 | CP p-val = 0.00618 **
+# Shelf - p-val = 0.06394 . - Ingen fejl - med CP p-val = 0.44955 | CP p-val = 0.01804 *
+# IcetempJAS p-val = 0.02421 * - Ingen fejl - med CP p-val = 0.5014 | CP p-val = 0.0502 . 
+# FS_Zha_areanorm p-val = <2e-16 *** - Model failed to converge - med CP p-val = 0.376346 | CP p-val = 0.008519 ** 
+# IcesalJFM p-val = <2e-16 *** - Model failed to converge - med CP p-val = 0.17357 | CP p-val = 0.00248 **
+#
+```
+
+```{r}
+cor(data.gamma$IcetempJAS,data.gamma$after2002, use = "complete.obs")
+```
+
+
+
+```{r}
+glmm_model8.test <- glmer(ng_g ~ after2002 + IcetempJAS + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+
+summary(glmm_model8.test)
+
+
+#Model med kun changepoint - changepoint p-val = 0.007683 **
+
+
+#Følgende variable er signifikante:
+# FYLT - p-val = 0.0816 . - model failed to converge - med CP p-val = 0.38733 | CP p-val = 0.00618 **
+# Shelf - p-val = 0.06394 . - Ingen fejl - med CP p-val = 0.44955 | CP p-val = 0.01804 *
+# IcetempJAS p-val = 0.02421 * - Ingen fejl - med CP p-val = 0.5014 | CP p-val = 0.0502 . 
+# FS_Zha_areanorm p-val = <2e-16 *** - Model failed to converge - med CP p-val = 0.376346 | CP p-val = 0.008519 ** 
+# IcesalJFM p-val = <2e-16 *** - Model failed to converge - med CP p-val = 0.17357 | CP p-val = 0.00248 **
+#
+```
+
+```{r}
+glmm_model_IcetempJAS <- glmer(ng_g ~ IcetempJAS + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log"),control = glmerControl(optimizer = "bobyqa")
+)
+
+sink("Kortisol_IcetempJAS.txt")
+summary(glmm_model_IcetempJAS)
+sink()
+summary(glmm_model_IcetempJAS)
+```
+
+```{r}
+confint(glmm_model_IcetempJAS, method = "Wald")
+```
+
+```{r}
+glmm_model_FS_Zha_areanorm <- glmer(ng_g ~ FS_Zha_areanorm + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+#,control = glmerControl(optimizer = "bobyqa")
+sink("Kortisol_FS_Zha_areanorm.txt")
+summary(glmm_model_FS_Zha_areanorm)
+sink()
+summary(glmm_model_FS_Zha_areanorm)
+
+glmm_model_FS_Zha_areanorm_bobyqa <- glmer(ng_g ~ FS_Zha_areanorm + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log"),control = glmerControl(optimizer = "bobyqa")
+)
+
+sink("Kortisol_FS_Zha_areanorm_bobyqa.txt")
+summary(glmm_model_FS_Zha_areanorm_bobyqa)
+sink()
+summary(glmm_model_FS_Zha_areanorm_bobyqa)
+```
+
+```{r}
+confint(glmm_model_FS_Zha_areanorm_bobyqa, method = "Wald")
+```
+
+
+```{r}
+glmm_model_IcesalJFM <- glmer(ng_g ~ IcesalJFM + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+
+)
+
+sink("Kortisol_IcesalJFM.txt")
+summary(glmm_model_IcesalJFM)
+sink()
+
+summary(glmm_model_IcesalJFM)
+
+glmm_model_IcesalJFM_bobyqa <- glmer(ng_g ~ IcesalJFM + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log"),control = glmerControl(optimizer = "bobyqa")
+
+)
+sink("Kortisol_IcesalJFM_bobyqa.txt")
+summary(glmm_model_IcesalJFM_bobyqa)
+sink()
+
+summary(glmm_model_IcesalJFM_bobyqa)
+```
+```{r}
+cor(data.gamma$IcesalJFM,data.gamma$ng_g, use = "complete.obs")
+```
+
+
+```{r}
+summary(glmm_model_IcetempJAS)
+```
+
+```{r}
+while (sink.number() > 0) sink()
+
+```
+
+```{r}
+data.gamma.no929 <- data.gamma %>%
+  filter(id != 929)
+
+glmm_model_IcesalJFM_no929 <- glmer(ng_g ~ IcesalJFM + (1 | id),
+  data = data.gamma.no929,
+  family = Gamma(link = "log")
+
+)
+
+glmm_model_IcetempJASno929 <- glmer(ng_g ~ IcetempJAS + (1 | id),
+  data = data.gamma.no929,
+  family = Gamma(link = "log"),control = glmerControl(optimizer = "bobyqa")
+)
+sink("kortisol_IcesalJFM_no929.txt")
+summary(glmm_model_IcesalJFM_no929)
+sink()
+
+summary(glmm_model_IcetempJASno929)
+```
+
+```{r}
+# Plot 1: ng_g vs FS_Zha_areanorm
+p1.FS_Zha_areanorm <- ggplot(data.gamma, aes(x = FS_Zha_areanorm, y = ng_g)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(x = "FS_Zha_areanorm", y = "ng_g", title = "Kortisol mod FS_Zha_areanorm") +
+  theme_minimal()
+
+# Plot 2: ng_g vs Year
+p2.FS_Zha_areanorm <- ggplot(data.gamma, aes(x = year, y = ng_g)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(x = "År", y = "ng_g", title = "Kortisol mod år") +
+  theme_minimal()
+
+# Plot 3: FS_Zha_areanorm vs Year
+p3.FS_Zha_areanorm <- ggplot(data.gamma, aes(x = year, y = FS_Zha_areanorm)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(x = "År", y = "FS_Zha_areanorm", title = "FS_Zha_areanorm mod år") +
+  theme_minimal()
+
+p1.FS_Zha_areanorm
+ggsave("kortisol_mod_FS_Zha_areanorm.pdf", width = 7, height = 5)
+p2.FS_Zha_areanorm
+ggsave("kortisol_mod_år.pdf", width = 7, height = 5)
+p3.FS_Zha_areanorm
+ggsave("FS_Zha_areanorm_mod_år.pdf", width = 7, height = 5)
+```
+```{r}
+# Plot 1: ng_g vs IcesalJFM
+p1.IcesalJFM <- ggplot(data.gamma, aes(x = IcesalJFM, y = ng_g)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(x = "IcesalJFM", y = "ng_g", title = "Kortisol mod IcesalJFM") +
+  theme_minimal()
+
+# Plot 2: ng_g vs Year
+p2.IcesalJFM <- ggplot(data.gamma, aes(x = year, y = ng_g)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(x = "År", y = "ng_g", title = "Kortisol mod år") +
+  theme_minimal()
+
+# Plot 3: IcesalJFM vs Year
+p3.IcesalJFM <- ggplot(data.gamma, aes(x = year, y = IcesalJFM)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(x = "År", y = "IcesalJFM", title = "IcesalJFM mod år") +
+  theme_minimal()
+
+p1.IcesalJFM
+ggsave("kortisol_mod_IcesalJFM.pdf", width = 7, height = 5)
+p2.IcesalJFM
+ggsave("kortisol_mod_år.pdf", width = 7, height = 5)
+p3.IcesalJFM
+ggsave("IcesalJFM_mod_år.pdf", width = 7, height = 5)
+```
+
+```{r}
+glmm_model_IcesalJFMno929bobyqa <- glmer(ng_g ~ IcesalJFM + (1 | id),
+  data = data.gamma.no929,
+  family = Gamma(link = "log"),control = glmerControl(optimizer = "bobyqa")
+)
+sink("kortisol_IcesalJFMno929bobyqa.txt")
+summary(glmm_model_IcesalJFMno929bobyqa)
+sink()
+summary(glmm_model_IcesalJFMno929bobyqa)
+```
+```{r}
+sum(residuals(glmm_model_IcesalJFMno929bobyqa, type = "pearson")^2) / df.residual(glmm_model_IcesalJFMno929bobyqa)
+
+```
+
+
+```{r}
+cor(data.gamma$IcesalJFM,data.gamma$ng_g, use = "complete.obs")
+```
+
+```{r}
+confint(glmm_model_IcesalJFMno929bobyqa, method = "Wald")
+```
+```{r}
+data.gamma.new <- data.gamma
+data.gamma.new$year_shifted <- data.gamma.new$year - 1978
+
+data.gamma.new$after_2002_shifted <- ifelse(data.gamma.new$year_shifted >= 24, 1, 0)
+
+glmm_model_shifted <- glmer(
+  ng_g ~ after_2002_shifted + (1 | id),
+  data = data.gamma.new,
+  family = Gamma(link = "log")
+)
+summary(glmm_model_shifted)
+```
+```{r}
+glmm_model_shifted_IcetempJAS <- glmer(
+  ng_g ~ IcetempJAS + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_model_shifted_IcetempJAS)
+```
+```{r}
+glmm_model_shifted_IcesalJFM <- glmer(
+  ng_g ~ IcesalJFM + (1 | id),
+  data = data.gamma.new,
+  family = Gamma(link = "log")
+)
+summary(glmm_model_shifted_IcesalJFM)
+```
+
+```{r}
+ggplot(data.gamma.no929, aes(x = IcesalJFM, y = ng_g, color = id)) +
+  geom_point(alpha = 0.7, size = 2) +
+  facet_wrap(~ id) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(
+    x = "IcesalJFM",
+    y = "ng/g",
+    title = "Kortisol mod IcesalJFM per ID",
+    color = "ID"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",  
+    strip.text = element_text(face = "bold", size = 12),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+ggsave("kortisol_per_IcesalJFM_per_individ.pdf", width = 7, height = 5)
+```
+```{r}
+ggplot(data.gamma, aes(x = year, y = ng_g, color = id)) +
+  geom_point(alpha = 0.7, size = 2) +
+  facet_wrap(~ id) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(
+    x = "År",
+    y = "ng/g",
+    title = "Kortisol mod år per ID",
+    color = "ID"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",  
+    strip.text = element_text(face = "bold", size = 12),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+ggsave("kortisol_per_år_per_individ.pdf", width = 7, height = 5)
+```
+
+```{r}
+ggplot(data.gamma, aes(x = year, y = IcetempJAS, color = id)) +
+  geom_point(alpha = 0.7, size = 2) +
+  facet_wrap(~ id) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(
+    x = "IcetempJAS",
+    y = "ng/g",
+    title = "Kortisol mod IcetempJAS per ID",
+    color = "ID"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",  
+    strip.text = element_text(face = "bold", size = 12),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+ggsave("kortisol_per_IcetempJAS_per_individ.pdf", width = 7, height = 5)
+```
+
+```{r}
+means_df <- data.gamma %>%
+  mutate(period = ifelse(year < 2002, "before_2002", "from_2002")) %>%
+  group_by(id, period) %>%
+  summarize(mean_ng_g = mean(ng_g, na.rm = TRUE),
+            start_year = ifelse(period == "before_2002", min(year[year < 2002], na.rm = TRUE), 2002),
+            end_year = ifelse(period == "before_2002", 2002, max(year[year >= 2002], na.rm = TRUE)),
+            .groups = "drop")
+
+means_df <- means_df %>%
+  mutate(line_color = ifelse(period == "before_2002", "red", "blue"))
+
+ggplot(data.gamma, aes(x = year, y = ng_g, color = id)) +
+  geom_point() +
+  geom_segment(data = means_df,
+               aes(x = start_year, xend = end_year,
+                   y = mean_ng_g, yend = mean_ng_g,
+                   group = interaction(id, period)),
+               color = means_df$line_color,
+               linewidth = 1.2) +
+  facet_wrap(~id) +
+  labs(title = "Facetted Scatterplot of ng_g over Year by ID",
+       x = "Year",
+       y = "ng_g") +
+  theme_minimal()
+
+```
+
+
+```{r}
+ranef(glmm_model_IcesalJFMno929bobyqa)$id
+```
+
+```{r}
+glmm_ny_Shelf <- glmer(
+  ng_g ~ Shelf + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_Shelf)
+
+glmm_ny_Shelf_change <- glmer(
+  ng_g ~ Shelf + (Shelf | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_Shelf_change)
+```
+```{r}
+glmm_ny_Shelf <- glmer(
+  ng_g ~ Shelf + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_Shelf)
+
+glmm_ny_Shelf_change <- glmer(
+  ng_g ~ Shelf + (Shelf | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_Shelf_change)
+```
+```{r}
+glmm_ny_FYLT <- glmer(
+  ng_g ~ FYLT + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_FYLT)
+
+glmm_ny_FYLT_change <- glmer(
+  ng_g ~ FYLT + (FYLT | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_FYLT_change)
+```
+```{r}
+glmm_ny_SIC <- glmer(
+  ng_g ~ SIC + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_SIC)
+
+glmm_ny_SIC_change <- glmer(
+  ng_g ~ SIC + (SIC | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_SIC_change)
+```
+```{r}
+glmm_ny_FS_Zha_areanorm <- glmer(
+  ng_g ~ FS_Zha_areanorm + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_FS_Zha_areanorm)
+
+glmm_ny_FS_Zha_areanorm_change <- glmer(
+  ng_g ~ FS_Zha_areanorm + (FS_Zha_areanorm | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_FS_Zha_areanorm_change)
+```
+```{r}
+glmm_ny_IcesalJFM <- glmer(
+  ng_g ~ IcesalJFM + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_IcesalJFM)
+
+glmm_ny_IcesalJFM_change <- glmer(
+  ng_g ~ IcesalJFM + (IcesalJFM | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_IcesalJFM_change)
+```
+```{r}
+glmm_ny_IcetempJAS <- glmer(
+  ng_g ~ IcetempJAS + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_IcetempJAS)
+
+glmm_ny_IcetempJAS_change <- glmer(
+  ng_g ~ IcetempJAS + (IcetempJAS | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_IcetempJAS_change)
+```
+```{r}
+glmm_ny_AMO <- glmer(
+  ng_g ~ AMO + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_AMO)
+
+glmm_ny_AMO_change <- glmer(
+  ng_g ~ AMO + (AMO | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_AMO_change)
+```
+```{r}
+glmm_ny_NEG_0to20m_81to73p5_aug <- glmer(
+  ng_g ~ NEG_0to20m_81to73p5_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_NEG_0to20m_81to73p5_aug)
+
+glmm_ny_NEG_0to20m_81to73p5_aug_change <- glmer(
+  ng_g ~ NEG_0to20m_81to73p5_aug + (NEG_0to20m_81to73p5_aug | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_NEG_0to20m_81to73p5_aug_change)
+```
+```{r}
+glmm_ny_NEG_0to20m_73p5to69_aug <- glmer(
+  ng_g ~ NEG_0to20m_73p5to69_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_NEG_0to20m_73p5to69_aug)
+
+glmm_ny_NEG_0to20m_73p5to69_aug_change <- glmer(
+  ng_g ~ NEG_0to20m_73p5to69_aug + (NEG_0to20m_73p5to69_aug | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_NEG_0to20m_73p5to69_aug_change)
+```
+```{r}
+glmm_ny_SEG_sst_strata9_aug <- glmer(
+  ng_g ~ SEG_sst_strata9_aug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_SEG_sst_strata9_aug)
+
+glmm_ny_SEG_sst_strata9_aug_change <- glmer(
+  ng_g ~ SEG_sst_strata9_aug + (SEG_sst_strata9_aug | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_SEG_sst_strata9_aug_change)
+```
+```{r}
+glmm_ny_IcesalJAS <- glmer(
+  ng_g ~ IcesalJAS + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_IcesalJAS)
+
+glmm_ny_IcesalJAS_change <- glmer(
+  ng_g ~ IcesalJAS + (IcesalJAS | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_IcesalJAS_change)
+```
+```{r}
+glmm_ny_Fx9_0to200_jas <- glmer(
+  ng_g ~ Fx9_0to200_jas + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_Fx9_0to200_jas)
+
+glmm_ny_Fx9_0to200_jas_change <- glmer(
+  ng_g ~ Fx9_0to200_jas + (Fx9_0to200_jas | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_Fx9_0to200_jas_change)
+```
+```{r}
+glmm_ny_Icesalall <- glmer(
+  ng_g ~ Icesalall + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_Icesalall)
+
+glmm_ny_Icesalall_change <- glmer(
+  ng_g ~ Icesalall + (Icesalall | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_Icesalall_change)
+```
+```{r}
+glmm_ny_IcetempJFM <- glmer(
+  ng_g ~ IcetempJFM + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_IcetempJFM)
+
+glmm_ny_IcetempJFM_change <- glmer(
+  ng_g ~ IcetempJFM + (IcetempJFM | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_IcetempJFM_change)
+```
+```{r}
+glmm_ny_Icetempall <- glmer(
+  ng_g ~ Icetempall + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_Icetempall)
+
+glmm_ny_Icetempall_change <- glmer(
+  ng_g ~ Icetempall + (Icetempall | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_Icetempall_change)
+```
+```{r}
+glmm_ny_MeanSI1820 <- glmer(
+  ng_g ~ MeanSI1820 + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_MeanSI1820)
+
+glmm_ny_MeanSI1820_change <- glmer(
+  ng_g ~ MeanSI1820 + (MeanSI1820 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_MeanSI1820_change)
+```
+```{r}
+glmm_ny_MeanSI1900 <- glmer(
+  ng_g ~ MeanSI1900 + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_MeanSI1900)
+
+glmm_ny_MeanSI1900_change <- glmer(
+  ng_g ~ MeanSI1900 + (MeanSI1900 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_MeanSI1900_change)
+```
+```{r}
+glmm_ny_Storaug <- glmer(
+  ng_g ~ Storaug + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_Storaug)
+
+glmm_ny_Storaug_change <- glmer(
+  ng_g ~ Storaug + (Storaug | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_Storaug_change)
+```
+```{r}
+glmm_ny_FS_Zha_volnorm <- glmer(
+  ng_g ~ FS_Zha_volnorm + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_FS_Zha_volnorm)
+
+glmm_ny_FS_Zha_volnorm_change <- glmer(
+  ng_g ~ FS_Zha_volnorm + (FS_Zha_volnorm | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_FS_Zha_volnorm_change)
+```
+```{r}
+glmm_ny_SST <- glmer(
+  ng_g ~ SST + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_SST)
+
+glmm_ny_SST_change <- glmer(
+  ng_g ~ SST + (SST | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_SST_change)
+```
+```{r}
+glmm_ny_MLD <- glmer(
+  ng_g ~ MLD + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_MLD)
+
+glmm_ny_MLD_change <- glmer(
+  ng_g ~ MLD + (MLD | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_MLD_change)
+```
+```{r}
+glmm_ny_NAO <- glmer(
+  ng_g ~ NAO + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_NAO)
+
+glmm_ny_NAO_change <- glmer(
+  ng_g ~ NAO + (NAO | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_NAO_change)
+```
+```{r}
+data.gamma$change <- ifelse(data.gamma$year < 2002, 0, 1)
+glmm_ny_change <- glmer(
+  ng_g ~ change + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_change)
+
+glmm_ny_change_change <- glmer(
+  ng_g ~ change + (change | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_change_change)
+```
+```{r}
+ranef(glmm_ny_change_change)$id
+```
+
+```{r}
+sink("kortisol_change_hældning.txt")
+summary(glmm_ny_change_change)
+sink()
+```
+
+```{r}
+anova(glmm_ny_change_change,glmm_ny_change)
+```
+```{r}
+data.gamma <- data.gamma %>%
+  mutate(year0 = year - 1978)
+
+glmm_ny_kortisol_year <- glmer(
+  ng_g ~ year + (year | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_ny_kortisol_year)
+```
+```{r}
+ranef(glmm_ny_kortisol_year)$id
+```
+
+
+```{r}
+plot_df <- data.gamma %>%
+  mutate(
+    fitted = fitted(glmm_ny_kortisol_year),  
+    obs = ng_g                               
+  )
+
+ggplot(plot_df, aes(x = year, color = as.factor(id))) +
+  geom_point(aes(y = obs), size = 2, alpha = 0.6) +   
+  geom_line(aes(y = fitted), size = 1) +              
+  facet_wrap(~id) +                                 
+  labs(
+    title = "Observerede og forudsagte ng_g niveauer (med random intercept og slope)",
+    x = "År",
+    y = "ng_g",
+    color = "ID"
+  ) +
+  theme_gray(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+  )
+ggsave("pred_kortisol_year_random.pdf", width = 7, height = 5)
+```
+```{r}
+plot_df4 <- data.gamma %>%
+  filter(complete.cases(ng_g, IcesalJFM, year, id)) %>%
+  mutate(
+    fitted = fitted(glmm_ny_IcesalJFM_change),
+    obs = ng_g
+  )
+
+ggplot(plot_df4, aes(x = IcesalJFM, color = as.factor(id))) +
+  geom_point(aes(y = obs), size = 2, alpha = 0.6) +   
+  geom_line(aes(y = fitted), size = 1) +              
+  facet_wrap(~id) +                                   
+  labs(
+    title = "Observerede og forudsagte ng_g niveauer (med random intercept og slope)",
+    x = "IcesalJFM",
+    y = "ng_g",
+    color = "ID"
+  ) +
+  theme_gray(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 14),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+  )
+ggsave("pred_kortisol_IcesalJFM_change.pdf", width = 7, height = 5)
+```
+```{r}
+plot_df4.1 <- data.gamma %>%
+  filter(complete.cases(ng_g, IcesalJFM, year, id)) %>%
+  mutate(
+    fitted = fitted(glmm_ny_IcesalJFM_change),
+    obs = ng_g
+  )
+
+ggplot(plot_df4.1, aes(x = IcesalJFM, color = as.factor(id))) +
+  geom_point(aes(y = obs), size = 2, alpha = 0.6) +   
+  geom_line(aes(y = fitted), size = 1) +                                      
+  labs(
+    title = "Observerede og forudsagte ng_g niveauer (med random intercept og slope)",
+    x = "IcesalJFM",
+    y = "ng_g",
+    color = "ID"
+  ) +
+  theme_gray(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 14),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+  )
+ggsave("pred_kortisol_IcesalJFM_change_nofacet.pdf", width = 7, height = 5)
+```
+
+
+```{r}
+plot_df3 <- data.gamma %>%
+  filter(complete.cases(ng_g, IcesalJFM, year, id)) %>%
+  mutate(
+    fitted = fitted(glmm_ny_IcesalJFM),
+    obs = ng_g
+  )
+
+ggplot(plot_df3, aes(x = IcesalJFM, color = as.factor(id))) +
+  geom_point(aes(y = obs), size = 2, alpha = 0.6) +   
+  geom_line(aes(y = fitted), size = 1) +              
+  facet_wrap(~id) +                                   
+  labs(
+    title = "Observerede og forudsagte ng_g niveauer (med random intercept)",
+    x = "IcesalJFM",
+    y = "ng_g",
+    color = "ID"
+  ) +
+  theme_gray(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 14),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+  )
+ggsave("pred_kortisol_IcesalJFM.pdf", width = 7, height = 5)
+```
+```{r}
+plot_df3.1 <- data.gamma %>%
+  filter(complete.cases(ng_g, IcesalJFM, year, id)) %>%
+  mutate(
+    fitted = fitted(glmm_ny_IcesalJFM),
+    obs = ng_g
+  )
+
+ggplot(plot_df3.1, aes(x = IcesalJFM, color = as.factor(id))) +
+  geom_point(aes(y = obs), size = 2, alpha = 0.6) +   
+  geom_line(aes(y = fitted), size = 1) +                                                
+  labs(
+    title = "Observerede og forudsagte ng_g niveauer (med random intercept)",
+    x = "IcesalJFM",
+    y = "ng_g",
+    color = "ID"
+  ) +
+  theme_gray(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 14),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+  )
+ggsave("pred_kortisol_IcesalJFM_nofacet.pdf", width = 7, height = 5)
+```
+```{r}
+plot_df5.1 <- data.gamma %>%
+  filter(complete.cases(ng_g, FS_Zha_areanorm, year, id)) %>%
+  mutate(
+    fitted = fitted(glmm_ny_FS_Zha_areanorm),
+    obs = ng_g
+  )
+
+ggplot(plot_df5.1, aes(x = FS_Zha_areanorm, color = as.factor(id))) +
+  geom_point(aes(y = obs), size = 2, alpha = 0.6) +  
+  geom_line(aes(y = fitted), size = 1) + 
+  facet_wrap(~id) +                                 
+  labs(
+    title = "Observerede og forudsagte ng_g niveauer (med random intercept)",
+    x = "FS_Zha_areanorm",
+    y = "ng_g",
+    color = "ID" 
+  ) +
+  theme_gray(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 14),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+  )
+ggsave("pred_kortisol_IFS_Zha_areanorm.pdf", width = 7, height = 5)
+```
+```{r}
+plot_df5.2 <- data.gamma %>%
+  filter(complete.cases(ng_g, FS_Zha_areanorm, year, id)) %>%
+  mutate(
+    fitted = fitted(glmm_ny_FS_Zha_areanorm_change),
+    obs = ng_g
+  )
+
+ggplot(plot_df5.2, aes(x = FS_Zha_areanorm, color = as.factor(id))) +
+  geom_point(aes(y = obs), size = 2, alpha = 0.6) +   
+  geom_line(aes(y = fitted), size = 1) +             
+  facet_wrap(~id) +                                 
+  labs(
+    title = "Observerede og forudsagte ng_g niveauer (med random intercept og slope)",
+    x = "FS_Zha_areanorm",
+    y = "ng_g",
+    color = "ID"
+  ) +
+  theme_gray(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 14),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+  )
+ggsave("pred_kortisol_FS_Zha_areanorm_change.pdf", width = 7, height = 5)
+```
+```{r}
+plot_df6.1 <- data.gamma %>%
+  filter(complete.cases(ng_g, IcetempJAS, year, id)) %>%
+  mutate(
+    fitted = fitted(glmm_ny_IcetempJAS),
+    obs = ng_g
+  )
+
+ggplot(plot_df6.1, aes(x = IcetempJAS, color = as.factor(id))) +
+  geom_point(aes(y = obs), size = 2, alpha = 0.6) +   
+  geom_line(aes(y = fitted), size = 1) +            
+  facet_wrap(~id) +                                  
+  labs(
+    title = "Observerede og forudsagte ng_g niveauer (med random intercept)",
+    x = "IcetempJAS",
+    y = "ng_g",
+    color = "ID"
+  ) +
+  theme_gray(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 14),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+  )
+ggsave("pred_kortisol_IcetempJAS.pdf", width = 7, height = 5)
+```
+
+```{r}
+plot_df6.2 <- data.gamma %>%
+  filter(complete.cases(ng_g, IcetempJAS, year, id)) %>%
+  mutate(
+    fitted = fitted(glmm_ny_IcetempJAS_change),
+    obs = ng_g
+  )
+
+ggplot(plot_df6.2, aes(x = IcetempJAS, color = as.factor(id))) +
+  geom_point(aes(y = obs), size = 2, alpha = 0.6) +   
+  geom_line(aes(y = fitted), size = 1) +            
+  facet_wrap(~id) +                                   
+  labs(
+    title = "Observerede og forudsagte ng_g niveauer (med random intercept og slope)",
+    x = "IcetempJAS",
+    y = "ng_g",
+    color = "ID"
+  ) +
+  theme_gray(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 14),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+  )
+ggsave("pred_kortisol_IcetempJAS_change.pdf", width = 7, height = 5)
+```
+
+```{r}
+plot_df3.no929 <- data.gamma.no929 %>%
+  filter(complete.cases(ng_g, IcesalJFM, year, id)) %>%
+  mutate(
+    fitted = fitted(glmm_model_IcesalJFMno929bobyqa),
+    obs = ng_g
+  )
+
+ggplot(plot_df3.no929, aes(x = IcesalJFM, color = as.factor(id))) +
+  geom_point(aes(y = obs), size = 2, alpha = 0.6) +   
+  geom_line(aes(y = fitted), size = 1) +              
+  facet_wrap(~id) +                                 
+  labs(
+    title = "Observerede og forudsagte ng_g niveauer (med random intercept)",
+    x = "IcesalJFM",
+    y = "ng_g",
+    color = "ID"
+  ) +
+  theme_gray(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 14),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+  )
+ggsave("pred_kortisol_IcesalJFM_no929.pdf", width = 7, height = 5)
+```
+
+```{r}
+glmm_ny_IcesalJFM_no929 <- glmer(
+  ng_g ~ IcesalJFM + (1 | id),
+  data = data.gamma.no929,
+  family = Gamma(link = "log"),control = glmerControl(optimizer = "bobyqa")
+)
+summary(glmm_ny_IcesalJFM_no929)
+
+glmm_ny_IcesalJFM_change_no929 <- glmer(
+  ng_g ~ IcesalJFM + (IcesalJFM | id),
+  data = data.gamma.no929,
+  family = Gamma(link = "log"),control = glmerControl(optimizer = "bobyqa")
+)
+summary(glmm_ny_IcesalJFM_change_no929)
+```
+```{r}
+isSingular(glmm_ny_IcesalJFM_change_no929)
+ranef(glmm_ny_IcesalJFM_change_no929)$id
+```
+
+```{r}
+sink("c_kort_icetempJAS.txt")
+summary(glmm_ny_IcetempJAS_change)
+sink()
+```
+
+```{r}
+sink("c_kort_FS_Zha_areanorm.txt")
+summary(glmm_ny_FS_Zha_areanorm_change)
+sink()
+```
+```{r}
+sink("c_kort_IcesalJFM.txt")
+summary(glmm_ny_IcesalJFM_change)
+sink()
+```
+
+```{r}
+sink("c_kort_IcesalJFM_no929.txt")
+summary(glmm_ny_IcesalJFM_change_no929)
+sink()
+```
+
+```{r}
+glmm_ny_progest_kortisol <- lmer(
+  pg_g ~ ng_g + (ng_g | id),
+  data = data.gamma
+)
+summary(glmm_ny_progest_kortisol)
+```
+
+```{r}
+plot_df5.2 <- data.gamma %>%
+  filter(complete.cases(ng_g, FS_Zha_areanorm, year, id)) %>%
+  mutate(
+    fitted = fitted(glmm_ny_FS_Zha_areanorm_change),
+    obs = ng_g
+  )
+
+ggplot(plot_df5.2, aes(x = FS_Zha_areanorm, color = as.factor(id))) +
+  geom_point(aes(y = obs), size = 2, alpha = 0.6) +   
+  geom_line(aes(y = fitted), size = 1) +             
+  facet_wrap(~id) +                                   
+  labs(
+    title = "Observerede og forudsagte ng_g niveauer (med random intercept og slope)",
+    x = "FS_Zha_areanorm",
+    y = "ng_g",
+    color = "ID"
+  ) +
+  theme_gray(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 14),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+  )
+ggsave("pred_kortisol_FS_Zha_areanorm_change.pdf", width = 7, height = 5)
+```
+
+```{r}
+set.seed(80013029)
+obs <- model.frame(glmm_ny_change)$ng_g
+fitted_vals <- fitted(glmm_ny_change)
+model_res <- obs - fitted_vals
+
+sim <- simulate(glmm_ny_change, nsim = 1)[[1]]
+sim_res <- sim - fitted_vals
+
+res_range <- range(c(model_res, sim_res), na.rm = TRUE)
+
+df_model <- data.frame(Fitted = fitted_vals, Residual = model_res)
+df_sim <- data.frame(Fitted = fitted_vals, Residual = sim_res)
+
+p1 <- ggplot(df_model, aes(x = Fitted, y = Residual)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  coord_cartesian(ylim = res_range) + 
+  labs(title = "Observed Residuals", x = "Fitted Values", y = "Residuals") +
+  theme_minimal()
+
+p2 <- ggplot(df_sim, aes(x = Fitted, y = Residual)) +
+  geom_point(alpha = 0.6, color = "steelblue") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  coord_cartesian(ylim = res_range) +  
+  labs(title = "Simulated Residuals", x = "Fitted Values", y = "Residuals") +
+  theme_minimal()
+
+p1 + p2 + plot_layout(ncol = 2)
+ggsave("kortisol_change_res.pdf", width = 7, height = 5)
+
+if (!exists(".Random.seed")) {
+  set.seed(NULL)  
+}
+
+current_seed <- sample.int(.Machine$integer.max, 1)
+set.seed(current_seed)
+
+cat("Using random seed:", current_seed, "\n")
+```
+```{r}
+data.gamma <- data.gamma %>%
+  left_join(
+    nitrogen_data %>% dplyr::select(id, year, nitrogen),
+    by = c("id", "year")
+  )
+progesteron_data <- progesteron_data %>%
+  rename(
+    id = individual,
+    year = Year
+  ) 
+progesteron_data$id <- as.character(progesteron_data$id)
+
+data.gamma <- data.gamma %>%
+  left_join(
+    progesteron_data %>% dplyr::select(id, year, ng_g_p),
+    by = c("id", "year")
+  )
+
+```
+
+```{r}
+gamma_fit <- fitdistr(data.gamma$ng_g, densfun = "gamma")
+
+shape <- gamma_fit$estimate["shape"]
+rate  <- gamma_fit$estimate["rate"]
+
+ggplot(data.gamma, aes(x = ng_g)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "lightblue", color = "black", alpha = 0.6) +
+  stat_function(fun = dgamma, args = list(shape = shape, rate = rate),
+                color = "red", size = 1.2) +
+  labs(title = "Gamma Fit på ng_g",
+       x = "ng_g", y = "Density") +
+  theme_minimal()
+ggsave("kortisol_fordeling_alle_id.pdf", width = 7, height = 5)
+```
+```{r}
+ng_all <- data.wide$ng_g
+ng_all <- ng_all[is.finite(ng_all) & ng_all > 0]
+
+data_929 <- subset(data.wide, id == 929)
+data_rest <- subset(data.wide, id != 929)
+
+ng_929 <- data_929$ng_g
+ng_rest <- data_rest$ng_g
+
+ng_929 <- ng_929[is.finite(ng_929) & ng_929 > 0]
+ng_rest <- ng_rest[is.finite(ng_rest) & ng_rest > 0]
+
+fit_929 <- fitdistr(ng_929, "gamma")
+fit_rest <- fitdistr(ng_rest, "gamma")
+
+shape_929 <- fit_929$estimate["shape"]
+rate_929  <- fit_929$estimate["rate"]
+
+shape_rest <- fit_rest$estimate["shape"]
+rate_rest  <- fit_rest$estimate["rate"]
+
+n_929 <- length(ng_929)
+n_rest <- length(ng_rest)
+w_929 <- n_929 / (n_929 + n_rest)
+w_rest <- n_rest / (n_929 + n_rest)
+
+x_vals <- seq(min(ng_all), max(ng_all), length.out = 500)
+
+density_df <- data.frame(
+  x = x_vals,
+  ID_929 = w_929 * dgamma(x_vals, shape = shape_929, rate = rate_929),
+  Resterende = w_rest * dgamma(x_vals, shape = shape_rest, rate = rate_rest),
+  Mixture = w_929 * dgamma(x_vals, shape = shape_929, rate = rate_929) +
+            w_rest * dgamma(x_vals, shape = shape_rest, rate = rate_rest)
+)
+
+density_long <- pivot_longer(density_df, cols = -x, names_to = "Group", values_to = "Density")
+
+ggplot() +
+  geom_histogram(aes(x = ng_all, y = ..density..),
+                 bins = 40, fill = "lightgray", color = "black", alpha = 0.6) +
+  geom_line(data = density_long, aes(x = x, y = Density, color = Group, linetype = Group), size = 1.2) +
+  scale_color_manual(values = c("ID_929" = "blue", "Resterende" = "darkgreen", "Mixture" = "red")) +
+  scale_linetype_manual(values = c("ID_929" = "solid", "Resterende" = "solid", "Mixture" = "dashed")) +
+  labs(
+    title = "Gamma Mixture Fit på ng_g",
+    x = "ng_g", y = "Density", color = "Component", linetype = "Component"
+  ) +
+  theme_minimal()
+ggsave("kortisol_fordeling_mixture.pdf", width = 7, height = 5)
+```
+
+```{r}
+p1 <- ggplot(data.gamma, aes(x = year, y = nitrogen, color = as.factor(id))) +
+  geom_point() +
+  geom_line() +
+  labs(y = "nitrogen", x = NULL, color = "ID") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+
+p2 <- ggplot(data.gamma, aes(x = year, y = ng_g_p, color = as.factor(id))) +
+  geom_point() +
+  geom_line() +
+  labs(y = "ng_g_p", x = NULL, color = "ID") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+p3 <- ggplot(data.gamma, aes(x = year, y = ng_g, color = as.factor(id))) +
+  geom_point() +
+  geom_line() +
+  labs(y = "ng_g", x = NULL, color = "ID") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+p4 <- ggplot(data.gamma, aes(x = year, y = d13c.cor, color = as.factor(id))) +
+  geom_point() +
+  geom_line() +
+  labs(y = "d13c.cor", x = "Year", color = "ID") +
+  theme_minimal()
+
+final_plot <- (p3 / p2 / p1 / p4) +
+  plot_layout(ncol = 1, guides = "collect") &
+  theme(legend.position = "right")
+
+final_plot + plot_annotation(title = "Tidsserie af Kortisol, Progesteron, Karbon13 og Nitrogen15 per ID")
+
+ggsave("tidsserie_kortisol_progesteron_carbon_nitrogen.pdf", width = 7, height = 5)
+```
+
+```{r}
+gamma_fit <- fitdistr(data.gamma$ng_g_p, densfun = "gamma")
+
+shape <- gamma_fit$estimate["shape"]
+rate  <- gamma_fit$estimate["rate"]
+
+pgamma_prog <- ggplot(data.gamma, aes(x = ng_g_p)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "lightblue", color = "black", alpha = 0.6) +
+  stat_function(fun = dgamma, args = list(shape = shape, rate = rate),
+                color = "red", size = 1.2) +
+  labs(title = "Gamma Fit på ng_g_p",
+       x = "ng_g_p", y = "Density") +
+  theme_minimal()
+normal_fit <- fitdistr(data.gamma$ng_g_p, densfun = "normal")
+
+mean <- normal_fit$estimate["mean"]
+sd   <- normal_fit$estimate["sd"]
+
+pnormal_prog <- ggplot(data.gamma, aes(x = ng_g_p)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "lightblue", color = "black", alpha = 0.6) +
+  stat_function(fun = dnorm, args = list(mean = mean, sd = sd),
+                color = "darkgreen", size = 1.2) +
+  labs(title = "Normal Fit på ng_g_p",
+       x = "ng_g_p", y = "Density") +
+  theme_minimal()
+pgamma_prog
+ggsave("progesteron_fordeling.pdf", width = 7, height = 5)
+```
+
+```{r}
+data.gamma.nitrogen <- data.gamma %>%
+  filter(!(GLG..Eva. %in% c(0, 1)))
+
+gamma_fit_n <- fitdistr(data.gamma.nitrogen$nitrogen, densfun = "gamma")
+
+shape_n <- gamma_fit_n$estimate["shape"]
+rate_n  <- gamma_fit_n$estimate["rate"]
+
+pgamma_nitrogen <- ggplot(data.gamma.nitrogen, aes(x = nitrogen)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "lightblue", color = "black", alpha = 0.6) +
+  stat_function(fun = dgamma, args = list(shape = shape_n, rate = rate_n),
+                color = "red", size = 1.2) +
+  labs(title = "Gamma Fit på nitrogen",
+       x = "nitrogen", y = "Density") +
+  theme_minimal()
+
+normal_fit_n <- fitdistr(data.gamma.nitrogen$nitrogen, densfun = "normal")
+
+mean_n <- normal_fit_n$estimate["mean"]
+sd_n   <- normal_fit_n$estimate["sd"]
+
+pnormal_nitrogen <- ggplot(data.gamma.nitrogen, aes(x = nitrogen)) +
+  geom_histogram(aes(y = ..density..), bins = 30, fill = "lightblue", color = "black", alpha = 0.6) +
+  stat_function(fun = dnorm, args = list(mean = mean_n, sd = sd_n),
+                color = "darkgreen", size = 1.2) +
+  labs(title = "Normal Fit på nitrogen",
+       x = "nitrogen", y = "Density") +
+  theme_minimal()
+
+pgamma_nitrogen + pnormal_nitrogen
+ggsave("nitrogen_fordeling.pdf", width = 7, height = 5)
+```
+
+```{r}
+normal_fit_d13c <- fitdistr(data.gamma$d13c.cor, densfun = "normal")
+
+mean_d <- normal_fit_d13c$estimate["mean"]
+sd_d   <- normal_fit_d13c$estimate["sd"]
+
+pnormal_d13c <- ggplot(data.gamma, aes(x = d13c.cor)) +
+  geom_histogram(aes(y = ..density..), bins = 30, 
+                 fill = "lightblue", color = "black", alpha = 0.6) +
+  stat_function(fun = dnorm, args = list(mean = mean_d, sd = sd_d),
+                color = "darkgreen", size = 1.2) +
+  labs(title = "Normal Fit på d13c.cor",
+       x = "d13c.cor", y = "Density") +
+  theme_minimal()
+
+pnormal_d13c
+ggsave("d13c_fordeling.pdf", width = 7, height = 5)
+
+```
+
+```{r}
+change_var <- function(x, data) {
+  return(ifelse(data$year >= x, 1, 0))
+}
+
+change_gamma_prog <- function(x) {
+  data.tmp <- data.gamma  
+  data.tmp$changepoint <- change_var(x, data.tmp)  
+  
+  model <- glmer(ng_g_p ~ changepoint + (1 | id),
+                 data = data.tmp,
+                 family = Gamma(link = "log"))
+  
+  return(-logLik(model)[1])  
+}
+```
+
+```{r}
+change_var <- function(x, data) {
+  return(ifelse(data$year >= x, 1, 0))
+}
+
+change_gamma_prog <- function(x) {
+  data.tmp <- data.gamma
+  data.tmp$changepoint <- change_var(x, data.tmp)
+  
+  model <- glmer(ng_g_p ~ changepoint + (1 | id),
+                 data = data.tmp,
+                 family = Gamma(link = "log"))
+  
+  return(-logLik(model)[1])
+}
+
+year_range <- seq(min(data.gamma$year), max(data.gamma$year))
+loglik_results <- data.frame(
+  year = year_range,
+  neg_logLik = sapply(year_range, change_gamma_prog)
+)
+
+min_row <- loglik_results %>% filter(neg_logLik == min(neg_logLik))
+changepoint_year <- min_row$year
+min_value <- min_row$neg_logLik
+
+ggplot(loglik_results, aes(x = year, y = neg_logLik)) +
+  geom_line(color = "blue") +
+  geom_point(aes(x = changepoint_year, y = min_value), color = "red", size = 3) +
+  geom_vline(xintercept = changepoint_year, linetype = "dashed", color = "red") +
+  geom_text(aes(x = changepoint_year + 0.5, y = min_value - 0.5, 
+              label = paste0("Year: ", changepoint_year)),
+          color = "red", hjust = 0, vjust = 1) +
+  labs(title = "Changepoint for Progesteron",
+       x = "År", y = "Log-Likelihood") +
+  theme_minimal()
+ggsave("changepoint_progesteron.pdf", width = 7, height = 5)
+```
+
+```{r}
+data.gamma <- data.gamma %>%
+  mutate(change_p = ifelse(year >= 1994, 1, 0))
+
+glmm_progesteron <- glmer(
+  ng_g_p ~ change_p + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_progesteron)
+
+glmm_progesteron_change <- glmer(
+  ng_g_p ~ change_p + (change_p | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_progesteron)
+```
+
+```{r}
+glmm_progesteron_year <- glmer(
+  ng_g_p ~ year + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+summary(glmm_progesteron_year)
+```
+
+```{r}
+plot_df <- data.gamma %>%
+  filter(complete.cases(ng_g_p, change_p, year, id)) %>%
+  mutate(
+    fitted = fitted(glmm_progesteron),
+    obs = ng_g_p
+  )
+plot_df <- plot_df %>%
+  mutate(id = factor(id, levels = sort(as.numeric(unique(id)))))
+
+
+ggplot(plot_df, aes(x = year, color = as.factor(id))) +
+  geom_point(aes(y = obs), size = 2, alpha = 0.6) +   
+  geom_line(aes(y = fitted, group = id), size = 1) +  
+  facet_wrap(~id) +                                   
+  labs(
+    title = "Observerede og forudsagte progesteron-niveauer med random intercept",
+    x = "År",
+    y = "ng/g_p (progesteron)",
+    color = "ID"
+  ) +
+  theme_gray(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 14),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+  )
+ggsave("progesteron_changepoint_facet.pdf", width = 7, height = 5)
+```
+```{r}
+plot_df <- data.gamma %>%
+  filter(complete.cases(ng_g, change, year, id)) %>%
+  mutate(
+    fitted = fitted(glmm_ny_change),
+    obs = ng_g
+  )
+
+ggplot(plot_df, aes(x = year, color = as.factor(id))) +
+  geom_point(aes(y = obs), size = 2, alpha = 0.6) +   
+  geom_line(aes(y = fitted, group = id), size = 1) +  
+  facet_wrap(~id) +
+  labs(
+    title = "Observerede og forudsagte værdier af ng_g (changepoint-model)",
+    x = "År",
+    y = "ng/g",
+    color = "ID"
+  ) +
+  theme_gray(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 14),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+  )
+
+```
+
+```{r}
+sink("GLMM_progesteron_change.txt")
+summary(glmm_progesteron)
+sink()
+sink("GLMM_progesteron_change_slope.txt")
+summary(glmm_progesteron_change)
+sink()
+```
+
+```{r}
+plot_df <- data.gamma %>%
+  filter(complete.cases(ng_g_p, change_p, year, id)) %>%
+  mutate(
+    fitted = fitted(glmm_progesteron_change),
+    obs = ng_g_p
+  )
+plot_df <- plot_df %>%
+  mutate(id = factor(id, levels = sort(as.numeric(unique(id)))))
+
+
+ggplot(plot_df, aes(x = year, color = as.factor(id))) +
+  geom_point(aes(y = obs), size = 2, alpha = 0.6) +   
+  geom_line(aes(y = fitted, group = id), size = 1) +  
+  facet_wrap(~id) +                                  
+  labs(
+    title = "Observerede og forudsagte progesteron-niveauer med random intercept og slope",
+    x = "År",
+    y = "ng/g_p (progesteron)",
+    color = "ID"
+  ) +
+  theme_gray(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 14),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+  )
+```
+
+```{r}
+change_var <- function(x, data) {
+  return(ifelse(data$year >= x, 1, 0))
+}
+
+change_lmm_nitrogen <- function(x) {
+  data.tmp <- data.gamma.nitrogen
+  data.tmp$changepoint <- change_var(x, data.tmp)
+  
+  model <- lmer(nitrogen ~ changepoint + (1 | id), data = data.tmp)
+  
+  return(-logLik(model)[1])
+}
+
+year_range <- seq(min(data.gamma.nitrogen$year), max(data.gamma.nitrogen$year))
+loglik_results <- data.frame(
+  year = year_range,
+  neg_logLik = sapply(year_range, change_lmm_nitrogen)
+)
+
+min_row <- loglik_results %>% filter(neg_logLik == min(neg_logLik))
+changepoint_year <- min_row$year
+min_value <- min_row$neg_logLik
+
+ggplot(loglik_results, aes(x = year, y = neg_logLik)) +
+  geom_line(color = "blue") +
+  geom_point(aes(x = changepoint_year, y = min_value), color = "red", size = 3) +
+  geom_vline(xintercept = changepoint_year, linetype = "dashed", color = "red") +
+  geom_text(aes(x = changepoint_year + 0.5, y = min_value - 0.5,
+                label = paste0("Year: ", changepoint_year)),
+            color = "red", hjust = 0, vjust = 1) +
+  labs(title = "Changepoint for Nitrogen",
+       x = "År", y = "log-likelihood") +
+  theme_minimal()
+
+ggsave("changepoint_nitrogen_lmm.pdf", width = 7, height = 5)
+
+```
+
+```{r}
+first_year_per_id <- data.gamma.nitrogen %>%
+  group_by(id) %>%
+  arrange(year) %>%
+  slice(1) %>%
+  ungroup() %>%
+  arrange(year) %>% 
+  dplyr::select(id,year)
+
+first_year_per_id
+```
+
+
+```{r}
+data.gamma.nitrogen <- data.gamma.nitrogen %>%
+  mutate(change_n = ifelse(year >= 1986, 1, 0))
+
+lmm_nitro_change <- lmer(nitrogen ~ change_n + (1 | id), data = data.gamma.nitrogen)
+summary(lmm_nitro_change)
+```
+
+```{r}
+data.gamma.nitrogen.reduced <- data.gamma.nitrogen %>%
+  filter(id %in% c(974, 1002, 1015, 1016))
+
+change_var <- function(x, data) {
+  return(ifelse(data$year >= x, 1, 0))
+}
+
+change_lmm_nitrogen <- function(x) {
+  data.tmp <- data.gamma.nitrogen.reduced
+  data.tmp$changepoint <- change_var(x, data.tmp)
+  
+  model <- lmer(nitrogen ~ changepoint + (1 | id), data = data.tmp)
+  
+  return(-logLik(model)[1])
+}
+
+year_range <- seq(min(data.gamma.nitrogen.reduced$year), max(data.gamma.nitrogen.reduced$year))
+loglik_results <- data.frame(
+  year = year_range,
+  neg_logLik = sapply(year_range, change_lmm_nitrogen)
+)
+
+min_row <- loglik_results %>% filter(neg_logLik == min(neg_logLik))
+changepoint_year <- min_row$year
+min_value <- min_row$neg_logLik
+
+ggplot(loglik_results, aes(x = year, y = neg_logLik)) +
+  geom_line(color = "blue") +
+  geom_point(aes(x = changepoint_year, y = min_value), color = "red", size = 3) +
+  geom_vline(xintercept = changepoint_year, linetype = "dashed", color = "red") +
+  geom_text(aes(x = changepoint_year + 0.5, y = min_value - 0.5,
+                label = paste0("Year: ", changepoint_year)),
+            color = "red", hjust = 0, vjust = 1) +
+  labs(title = "Changepoint for Nitrogen (Reduced ID set)",
+       x = "År", y = "Log-likelihood") +
+  theme_minimal()
+
+ggsave("changepoint_nitrogen_lmm_reduced.pdf", width = 7, height = 5)
+
+```
+
+```{r}
+data.gamma.nitrogen <- data.gamma.nitrogen %>%
+  mutate(change_n2 = ifelse(year >= 2004, 1, 0))
+
+lmm_nitro_change2 <- lmer(nitrogen ~ change_n2 + (1 | id), data = data.gamma.nitrogen)
+summary(lmm_nitro_change2)
+```
+
+```{r}
+lmm_nitro_change2_slope <- lmer(nitrogen ~ change_n2 + (change_n2 | id), data = data.gamma.nitrogen)
+summary(lmm_nitro_change2_slope)
+lmm_nitro_change_slope <- lmer(nitrogen ~ change_n + (change_n | id), data = data.gamma.nitrogen)
+summary(lmm_nitro_change2_slope)
+```
+
+```{r}
+plot_df <- data.gamma.nitrogen %>%
+  mutate(
+    fitted = fitted(lmm_nitro_change_slope),  
+    obs = nitrogen                             
+  ) %>%
+  mutate(id = factor(id, levels = sort(as.numeric(unique(id)))))  
+
+ggplot(plot_df, aes(x = year, color = as.factor(id))) +
+  geom_point(aes(y = obs), size = 2, alpha = 0.6) +    
+  geom_line(aes(y = fitted), size = 1) +               
+  facet_wrap(~id) +                                    
+  labs(
+    title = "Observerede og forudsagte nitrogen-niveauer (med random intercept og slope)",
+    x = "År",
+    y = "Nitrogen",
+    color = "ID"
+  ) +
+  theme_gray(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+  )
+
+ggsave("pred_nitrogen_year_random.pdf", width = 7, height = 5)
+
+```
+
+```{r}
+plot_df <- data.gamma.nitrogen %>%
+  mutate(
+    fitted = fitted(lmm_nitro_change), 
+    obs = nitrogen                             
+  ) %>%
+  mutate(id = factor(id, levels = sort(as.numeric(unique(id)))))  
+
+ggplot(plot_df, aes(x = year, color = as.factor(id))) +
+  geom_point(aes(y = obs), size = 2, alpha = 0.6) +    
+  geom_line(aes(y = fitted), size = 1) +               
+  facet_wrap(~id) +                                    
+  labs(
+    title = "Observerede og forudsagte nitrogen-niveauer med random intercept",
+    x = "År",
+    y = "Nitrogen",
+    color = "ID"
+  ) +
+  theme_gray(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+  )
+ggsave("pred_nitrogen_year_change.pdf", width = 7, height = 5)
+```
+```{r}
+change_var <- function(x, data) {
+  return(ifelse(data$year >= x, 1, 0))
+}
+
+change_lmm_d13c <- function(x) {
+  data.tmp <- data.gamma
+  data.tmp$changepoint <- change_var(x, data.tmp)
+  
+  model <- lmer(d13c.cor ~ changepoint + (1 | id), data = data.tmp)
+  
+  return(-logLik(model)[1])
+}
+
+year_range <- seq(min(data.gamma$year), max(data.gamma$year))
+loglik_results <- data.frame(
+  year = year_range,
+  neg_logLik = sapply(year_range, change_lmm_d13c)
+)
+
+min_row <- loglik_results %>% filter(neg_logLik == min(neg_logLik))
+changepoint_year <- min_row$year
+min_value <- min_row$neg_logLik
+
+pcarbon1990 <- ggplot(loglik_results, aes(x = year, y = neg_logLik)) +
+  geom_line(color = "blue") +
+  geom_point(aes(x = changepoint_year, y = min_value), color = "red", size = 3) +
+  geom_vline(xintercept = changepoint_year, linetype = "dashed", color = "red") +
+  geom_text(aes(x = changepoint_year + 0.5, y = min_value - 0.5,
+                label = paste0("Year: ", changepoint_year)),
+            color = "red", hjust = 0, vjust = 1) +
+  labs(title = "Changepoint for d13c.cor",
+       x = "År", y = "Log-likelihood") +
+  theme_minimal()
+pcarbon1990
+ggsave("changepoint_d13c_lmm.pdf", width = 7, height = 5)
+
+```
+
+```{r}
+data.gamma.d13c.reduced <- data.gamma %>%
+  filter(id %in% c(974, 1002, 1015, 1016))
+
+change_var <- function(x, data) {
+  return(ifelse(data$year >= x, 1, 0))
+}
+
+change_lmm_d13c_reduced <- function(x) {
+  data.tmp <- data.gamma.d13c.reduced
+  data.tmp$changepoint <- change_var(x, data.tmp)
+  
+  model <- lmer(d13c.cor ~ changepoint + (1 | id), data = data.tmp)
+  
+  return(-logLik(model)[1])
+}
+
+year_range <- seq(min(data.gamma.d13c.reduced$year), max(data.gamma.d13c.reduced$year))
+loglik_results <- data.frame(
+  year = year_range,
+  neg_logLik = sapply(year_range, change_lmm_d13c_reduced)
+)
+
+min_row <- loglik_results %>% filter(neg_logLik == min(neg_logLik))
+changepoint_year <- min_row$year
+min_value <- min_row$neg_logLik
+
+pcarbon2000 <- ggplot(loglik_results, aes(x = year, y = neg_logLik)) +
+  geom_line(color = "blue") +
+  geom_point(aes(x = changepoint_year, y = min_value), color = "red", size = 3) +
+  geom_vline(xintercept = changepoint_year, linetype = "dashed", color = "red") +
+  geom_text(aes(x = changepoint_year + 0.5, y = min_value - 0.5,
+                label = paste0("Year: ", changepoint_year)),
+            color = "red", hjust = 0, vjust = 1) +
+  labs(title = "Changepoint for d13c.cor (Reduced IDs)",
+       x = "År", y = "Log-likelihood") +
+  theme_minimal()
+pcarbon2000
+ggsave("changepoint_d13c_lmm_reduced.pdf", width = 7, height = 5)
+
+```
+```{r}
+pcarbon1990 + pcarbon2000
+ggsave("changepoints_carbon_both.pdf", width = 7, height = 5)
+```
+
+
+```{r}
+data.gamma <- data.gamma %>%
+  mutate(change_c1990 = ifelse(year >= 1990, 1, 0))
+
+lmm_carbon1990 <- lmer(d13c.cor ~ change_c1990 + (1 | id), data = data.gamma)
+summary(lmm_carbon1990)
+
+data.gamma <- data.gamma %>%
+  mutate(change_c2000 = ifelse(year >= 2000, 1, 0))
+
+lmm_carbon2000 <- lmer(d13c.cor ~ change_c2000 + (1 | id), data = data.gamma)
+summary(lmm_carbon2000)
+```
+```{r}
+sink("p-værdier_carbon13_cps.txt")
+summary(lmm_carbon1990)
+summary(lmm_carbon2000)
+sink()
+```
+
+```{r}
+plot_df <- data.gamma %>%
+  mutate(
+    fitted = fitted(lmm_carbon1990),  
+    obs = d13c.cor                    
+  ) %>%
+  mutate(id = factor(id, levels = sort(as.numeric(unique(id)))))  
+
+ggplot(plot_df, aes(x = year, color = as.factor(id))) +
+  geom_point(aes(y = obs), size = 2, alpha = 0.6) +    
+  geom_line(aes(y = fitted), size = 1) +               
+  facet_wrap(~id) +                                    
+  labs(
+    title = "Observerede og forudsagte d13c.cor-niveauer med random intercept",
+    x = "År",
+    y = "d13c.cor",
+    color = "ID"
+  ) +
+  theme_gray(base_size = 14) +
+  theme(
+    strip.text = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+  )
+
+ggsave("pred_d13c_year_carbon1990.pdf", width = 7, height = 5)
+
+```
+
+```{r}
+lmm_carbon1990_slope <- lmer(d13c.cor ~ change_c1990 + (change_c1990 | id), data = data.gamma)
+sink("carbon1990_slope.txt")
+summary(lmm_carbon1990_slope)
+sink()
+```
+
+```{r}
+anova(lmm_nitro_change,lmm_nitro_change2)
+```
+
+```{r}
+sink("nitrogen_random_slope_1986.txt")
+summary(lmm_nitro_change_slope)
+sink()
+summary(lmm_nitro_change_slope)
+```
+
+```{r}
+sink("modeller_med_random_slope.txt")
+summary(glmm_ny_IcetempJAS_change)
+summary(glmm_ny_FS_Zha_areanorm_change)
+summary(glmm_ny_IcesalJAS_change)
+sink()
+```
+
+```{r}
+glmm_ny_IcesalJAS_change_bobyqa <- glmer(
+  ng_g ~ IcesalJAS + (IcesalJAS | id),
+  data = data.gamma,
+  family = Gamma(link = "log"),control = glmerControl(optimizer = "bobyqa")
+)
+summary(glmm_ny_IcesalJAS_change_bobyqa)
+```
+
+```{r}
+glmm_ny_IcesalJAS_no929 <- glmer(
+  ng_g ~ IcesalJAS + (IcesalJAS | id),
+  data = data.gamma.no929,
+  family = Gamma(link = "log"),control = glmerControl(optimizer = "bobyqa")
+)
+summary(glmm_ny_IcesalJAS_no929)
+```
+
+```{r}
+obs_per_id <- data.gamma %>%
+  group_by(id) %>%
+  summarise(
+    n_ng_g = sum(!is.na(ng_g)),
+    n_ng_g_p = sum(!is.na(ng_g_p)),
+    n_nitrogen = sum(!is.na(nitrogen)),
+    n_d13c_cor = sum(!is.na(d13c.cor))
+  ) %>%
+  arrange(id)
+
+print(obs_per_id)
+
+mean_obs <- data.gamma %>%
+  filter(!is.na(ng_g)) %>%
+  count(id) %>%
+  summarise(mean_n_obs = mean(n))
+
+print(mean_obs)
+
+  
+```
+```{r}
+median_obs <- data.gamma %>%
+  group_by(id) %>%
+  summarise(
+    n_ng_g = sum(!is.na(ng_g)),
+    n_ng_g_p = sum(!is.na(ng_g_p)),
+    n_nitrogen = sum(!is.na(nitrogen)),
+    n_d13c_cor = sum(!is.na(d13c.cor))
+  ) %>%
+  summarise(
+    median_ng_g = median(n_ng_g),
+    median_ng_g_p = median(n_ng_g_p),
+    median_nitrogen = median(n_nitrogen),
+    median_d13c_cor = median(n_d13c_cor)
+  )
+
+print(median_obs)
+
+```
+```{r}
+lmm_nitrogen_year <- lmer(nitrogen ~ year + (1 | id), data = data.gamma.nitrogen)
+lmm_nitrogen_year_slope <- lmer(nitrogen ~ year + (year | id), data = data.gamma.nitrogen)
+sink("nitrogen_year_+_slope.txt")
+summary(lmm_nitrogen_year)
+summary(lmm_nitrogen_year_slope)
+sink()
+```
+```{r}
+lmm_carbon_year <- lmer(d13c.cor ~ year + (1 | id), data = data.gamma)
+lmm_carbon_year_slope <- lmer(d13c.cor ~ year + (year | id), data = data.gamma)
+sink("carbon_year_+_slope.txt")
+summary(lmm_carbon_year)
+summary(lmm_carbon_year_slope)
+sink()
+```
+
+```{r}
+glmm_progesteron_year1 <- glmer(
+  ng_g_p ~ year + (1 | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+glmm_progesteron_year1_slope <- glmer(
+  ng_g_p ~ year + (year | id),
+  data = data.gamma,
+  family = Gamma(link = "log")
+)
+sink("progesteron_year_+_slope.txt")
+summary(glmm_progesteron_year1)
+summary(glmm_progesteron_year1_slope)
+sink()
+```
+```{r}
+set.seed(2106727468)
+if (!exists(".Random.seed")) set.seed(NULL)
+current_seed <- sample.int(.Machine$integer.max, 1)
+set.seed(current_seed)
+cat("Using random seed for FS_Zha_areanorm:", current_seed, "\n")
+
+obs <- model.frame(glmm_ny_FS_Zha_areanorm)$ng_g
+fitted_vals <- fitted(glmm_ny_FS_Zha_areanorm)
+model_res <- obs - fitted_vals
+
+sim <- simulate(glmm_ny_FS_Zha_areanorm, nsim = 1)[[1]]
+sim_res <- sim - fitted_vals
+
+res_range <- range(c(model_res, sim_res), na.rm = TRUE)
+
+df_model <- data.frame(Fitted = fitted_vals, Residual = model_res)
+df_sim <- data.frame(Fitted = fitted_vals, Residual = sim_res)
+
+p1 <- ggplot(df_model, aes(x = Fitted, y = Residual)) +
+  geom_point(alpha = 0.6) + geom_hline(yintercept = 0, linetype = "dashed") +
+  coord_cartesian(ylim = res_range) +
+  labs(title = "Observerede residualer: FS_Zha_areanorm", x = "Fittede værdier", y = "Residualer") +
+  theme_minimal()
+
+p2 <- ggplot(df_sim, aes(x = Fitted, y = Residual)) +
+  geom_point(alpha = 0.6, color = "steelblue") + geom_hline(yintercept = 0, linetype = "dashed") +
+  coord_cartesian(ylim = res_range) +
+  labs(title = "Simulerede residualer: FS_Zha_areanorm", x = "Fittede værdier", y = "Residualer") +
+  theme_minimal()
+
+p1 + p2 + plot_layout(ncol = 2)
+ggsave("FS_Zha_resids_plot.pdf", width = 7, height = 5)
+```
+```{r}
+set.seed(1820876034)
+if (!exists(".Random.seed")) set.seed(NULL)
+current_seed <- sample.int(.Machine$integer.max, 1)
+set.seed(current_seed)
+cat("Using random seed for IcetempJAS:", current_seed, "\n")
+
+obs <- model.frame(glmm_ny_IcetempJAS)$ng_g
+fitted_vals <- fitted(glmm_ny_IcetempJAS)
+model_res <- obs - fitted_vals
+
+sim <- simulate(glmm_ny_IcetempJAS, nsim = 1)[[1]]
+sim_res <- sim - fitted_vals
+
+res_range <- range(c(model_res, sim_res), na.rm = TRUE)
+
+df_model <- data.frame(Fitted = fitted_vals, Residual = model_res)
+df_sim <- data.frame(Fitted = fitted_vals, Residual = sim_res)
+
+# Plots
+p1 <- ggplot(df_model, aes(x = Fitted, y = Residual)) +
+  geom_point(alpha = 0.6) + geom_hline(yintercept = 0, linetype = "dashed") +
+  coord_cartesian(ylim = res_range) +
+  labs(title = "Observerede residualer: IcetempJAS", x = "Fittede værdier", y = "Residualer") +
+  theme_minimal()
+
+p2 <- ggplot(df_sim, aes(x = Fitted, y = Residual)) +
+  geom_point(alpha = 0.6, color = "steelblue") + geom_hline(yintercept = 0, linetype = "dashed") +
+  coord_cartesian(ylim = res_range) +
+  labs(title = "Simulerede residualer: IcetempJAS", x = "Fittede værdier", y = "Residualer") +
+  theme_minimal()
+
+p1 + p2 + plot_layout(ncol = 2)
+ggsave("IcetempJAS_resids_plot.pdf", width = 7, height = 5)
+```
+```{r}
+set.seed(851874421)
+if (!exists(".Random.seed")) set.seed(NULL)
+current_seed <- sample.int(.Machine$integer.max, 1)
+set.seed(current_seed)
+cat("Using random seed for IcesalJFM:", current_seed, "\n")
+
+obs <- model.frame(glmm_ny_IcesalJFM)$ng_g
+fitted_vals <- fitted(glmm_ny_IcesalJFM)
+model_res <- obs - fitted_vals
+
+sim <- simulate(glmm_ny_IcesalJFM, nsim = 1)[[1]]
+sim_res <- sim - fitted_vals
+
+res_range <- range(c(model_res, sim_res), na.rm = TRUE)
+
+df_model <- data.frame(Fitted = fitted_vals, Residual = model_res)
+df_sim <- data.frame(Fitted = fitted_vals, Residual = sim_res)
+
+p1 <- ggplot(df_model, aes(x = Fitted, y = Residual)) +
+  geom_point(alpha = 0.6) + geom_hline(yintercept = 0, linetype = "dashed") +
+  coord_cartesian(ylim = res_range) +
+  labs(title = "Observerede residualer: IcesalJFM", x = "Fittede værdier", y = "Residualer") +
+  theme_minimal()
+
+p2 <- ggplot(df_sim, aes(x = Fitted, y = Residual)) +
+  geom_point(alpha = 0.6, color = "steelblue") + geom_hline(yintercept = 0, linetype = "dashed") +
+  coord_cartesian(ylim = res_range) +
+  labs(title = "Simulerede residualer: IcesalJFM", x = "Fittede værdier", y = "Residualer") +
+  theme_minimal()
+
+p1 + p2 + plot_layout(ncol = 2)
+ggsave("IcesalJFM_resids_plot.pdf", width = 7, height = 5)
+```
+
+
+
